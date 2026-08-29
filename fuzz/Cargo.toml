@@ -17,7 +17,16 @@ path = ".."
 [workspace]
 
 [[bin]]
-name = "fuzz_ops"
-path = "fuzz_targets/fuzz_ops.rs"
+name = "pathmap_ops"
+path = "fuzz_targets/pathmap_ops.rs"
+test = false
+doc = false
+
+# Zipper API fuzzing.  Shares its decoder with examples/pathmap_trace.rs and
+# with the Lean model in lean/PathMapModel/Fuzz.lean, so the corpus it produces
+# can be replayed through lean/differential.py.
+[[bin]]
+name = "zipper_ops"
+path = "fuzz_targets/zipper_ops.rs"
 test = false
 doc = false
