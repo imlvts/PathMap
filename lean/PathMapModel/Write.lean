@@ -169,8 +169,10 @@ Note the value at the old focus is *not* carried up — it belonged to the paren
 cell, not to the node that gets moved. -/
 def removePrefix (n : Nat) : Bool × Zip V :=
   let below := z.focusNode
-  let (fully, z1) := z.ascend n
-  (fully, z1.withTrie (z1.trie.graftBelow z1.focus below))
+  -- `ascend` now reports how far it got, so "were all `n` bytes removed" is a
+  -- comparison rather than the flag it used to return directly.
+  let (ascended, z1) := z.ascend n
+  (ascended == n, z1.withTrie (z1.trie.graftBelow z1.focus below))
 
 /-! ## Algebraic operations
 

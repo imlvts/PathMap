@@ -133,7 +133,7 @@ fn run(name: &str) {
             let mut rz = map.read_zipper_at_path(&[0u8, 0, 1]);
             println!("  root=[0,0,1] exists={} origin={:?}", rz.path_exists(), rz.origin_path());
             let moved = rz.to_next_sibling_byte();
-            println!("  to_next_sibling_byte->{moved} at_root={} path={:?} origin={:?} val={:?}",
+            println!("  to_next_sibling_byte->{moved:?} at_root={} path={:?} origin={:?} val={:?}",
                      rz.at_root(), rz.path(), rz.origin_path(), rz.val());
             println!("  <-- the zipper is reading [0,0,3], outside its own root");
         }
@@ -209,7 +209,7 @@ fn run(name: &str) {
             println!("  trie: {}", paths(&map));
             let mut wz = map.write_zipper_at_path(&[0u8]);
             println!("  at root: val_count={}", wz.val_count());
-            println!("  descend_last_byte->{}", wz.descend_last_byte());
+            println!("  descend_last_byte->{:?}", wz.descend_last_byte());
             println!("  ascend_until->{}  val_count={} (expected 2)", wz.ascend_until(), wz.val_count());
         }
 
@@ -230,7 +230,7 @@ fn run(name: &str) {
             let mut wz = map.write_zipper();
             wz.descend_to_byte(0);
             println!("  focus exists={}", wz.path_exists());
-            println!("  to_prev_sibling_byte -> {}", wz.to_prev_sibling_byte());
+            println!("  to_prev_sibling_byte -> {:?}", wz.to_prev_sibling_byte());
         }
 
         "remove_unmasked_dangling" => {

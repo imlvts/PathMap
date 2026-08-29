@@ -68,27 +68,35 @@ theorem origin_eq_root_append_path : z.rootPrefixPath ++ z.path = z.focus := rfl
 theorem focus_reset : z.reset.focus = z.rootPrefixPath := by
   simp [reset, focus, rootPrefixPath]
 
-@[simp] theorem ascend_zero : z.ascend 0 = (true, z) := by
+@[simp] theorem ascend_zero : z.ascend 0 = (0, z) := by
   simp [ascend]
 
-/-- Ascending exactly as far as you descended returns you to where you were. -/
+/-- The count `ascend` reports is exactly the depth the focus lost.
+
+This is the heart of the blind-zipper contract: a zipper with no `path()` learns
+how far it moved only from this number, so it had better be exact. -/
+theorem ascend_accounts (n : Nat) :
+    ((z.ascend n).2).path.length + (z.ascend n).1 = z.path.length := by
+  simp [ascend]
+  omega
+
+/-- Ascending exactly as far as you descended returns you to where you were, and
+says so. -/
 theorem ascend_descendTo (k : Path) :
-    ((z.descendTo k).ascend k.length).2 = z := by
+    (z.descendTo k).ascend k.length = (k.length, z) := by
   simp [ascend, descendTo, Nat.add_sub_cancel]
 
-/-- Ascending past the root stops at the root and reports failure. -/
+/-- Ascending past the root stops at the root and reports the shortfall. -/
 theorem ascend_overshoot {n : Nat} (h : z.path.length < n) :
-    z.ascend n = (false, z.reset) := by
-  simp [ascend, reset, Nat.not_le_of_gt h]
+    z.ascend n = (z.path.length, z.reset) := by
+  simp [ascend, reset, Nat.min_eq_right (Nat.le_of_lt h)]
 
 /-- Ascending never moves the focus below where it was. -/
 theorem ascend_le (n : Nat) : ((z.ascend n).2).path.length ≤ z.path.length := by
-  unfold ascend
-  split <;> simp
+  simp [ascend]
 
 /-- Movement never changes the trie: the read API is pure. -/
-@[simp] theorem trie_ascend (n : Nat) : ((z.ascend n).2).trie = z.trie := by
-  unfold ascend; split <;> rfl
+@[simp] theorem trie_ascend (n : Nat) : ((z.ascend n).2).trie = z.trie := rfl
 
 @[simp] theorem trie_reset : z.reset.trie = z.trie := rfl
 
@@ -105,8 +113,15 @@ theorem ascend_le (n : Nat) : ((z.ascend n).2).path.length ≤ z.path.length := 
 /-- `descend_to_byte` is `descend_to` with a one-byte key. -/
 @[simp] theorem descendToByte_eq (b : UInt8) : z.descendToByte b = z.descendTo [b] := rfl
 
-/-- `ascend_byte` is `ascend 1`. -/
-@[simp] theorem ascendByte_eq : z.ascendByte = z.ascend 1 := rfl
+/-- `ascend_byte` is `ascend 1` compared against 1, as the trait now defines it. -/
+@[simp] theorem ascendByte_eq :
+    z.ascendByte = ((z.ascend 1).1 == 1, (z.ascend 1).2) := rfl
+
+/-- `focus_byte` is the last byte of the relative path.
+
+At the root the trait leaves this unspecified, and the model's answer there is
+`none`; nothing may be concluded from it either way. -/
+theorem focusByte_eq : z.focusByte = z.path.getLast? := rfl
 
 end Zip
 
@@ -208,11 +223,13 @@ focus existed when it was called. -/
 def descendToExistingLands (z : Zip V) (k : Path) : Bool :=
   if z.pathExists then (z.descendToExisting k).2.pathExists else true
 
-/-- `descend_indexed_byte` lands on an existing location for every valid index. -/
+/-- `descend_indexed_byte` lands on an existing location for every valid index,
+and the byte it reports is the byte it landed on. -/
 def descendIndexedLands (z : Zip V) : Bool :=
   (List.range z.childCount).all (fun i =>
-    let (ok, z') := z.descendIndexedByte i
-    ok && z'.pathExists)
+    match z.descendIndexedByte i with
+    | (some b, z') => z'.pathExists && z'.focusByte == some b
+    | (none, _) => false)
 
 /-- `to_next_sibling_byte` and `to_prev_sibling_byte` are mutually inverse —
 **but only from an existing location**.
@@ -225,11 +242,27 @@ path cannot expect to step back. -/
 def siblingRoundTrip (z : Zip V) : Bool :=
   if !z.pathExists then true
   else
-    let (moved, z') := z.toNextSiblingByte
-    if moved then
-      let (back, z'') := z'.toPrevSiblingByte
-      back && z''.path == z.path
-    else true
+    match z.toNextSiblingByte with
+    | (none, _) => true
+    | (some b, z') =>
+        z'.focusByte == some b &&
+          (match z'.toPrevSiblingByte with
+           | (some _, z'') => z''.path == z.path
+           | (none, _) => false)
+
+/-- `descend_until_observed` reports exactly the bytes it descended.
+
+A blind zipper has no `path()`, so this sequence is its only account of where it
+went; it must equal the path delta. -/
+def descendUntilObservedExact (z : Zip V) : Bool :=
+  let (moved, obs, z') := z.descendUntilObserved
+  (z'.path == z.path ++ obs) && (moved == !obs.isEmpty)
+
+/-- `ascend_until` never ascends past the zipper's root, and reports the exact
+distance travelled. -/
+def ascendUntilAccounts (z : Zip V) : Bool :=
+  let (n, z') := z.ascendUntil
+  z'.path.length + n == z.path.length && z.path.length ≥ n
 
 /-- `to_next_val` enumerates values in strictly increasing depth-first order and
 finishes at the root. -/

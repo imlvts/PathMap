@@ -23,7 +23,7 @@ header:
   r0        := u8 % 4 ; r0 × pathbyte    -- write zipper root
   r1        := u8 % 4 ; r1 × pathbyte    -- read  zipper root
 body:
-  repeated: op := u8 % 47 ; operands per op (see `Op.decode`)
+  repeated: op := u8 % 48 ; operands per op (see `Op.decode`)
 ```
 
 Every **path byte** is masked to `b % 4`, so the generated tries share prefixes
@@ -61,6 +61,12 @@ def hexByte (b : UInt8) : String :=
 
 def hexPath (p : Path) : String :=
   if p.isEmpty then "_" else String.join (p.map hexByte)
+
+/-- Render the `Option<u8>` the movement operations now return: the byte moved
+to, or `-` for "did not move". -/
+def showByteOpt : Option UInt8 → String
+  | none => "-"
+  | some b => hexByte b
 
 def showVal : Option V → String
   | none => "-"
@@ -130,7 +136,9 @@ def fingerprint (z : Zip V) : String :=
   hexPath z.path ++ " o" ++ hexPath z.focus ++
   " e" ++ (if z.pathExists then "1" else "0") ++
   " v" ++ showVal z.val ++ " c" ++ toString z.childCount ++
-  " n" ++ toString z.valCount
+  " n" ++ toString z.valCount ++
+  -- `focus_byte` is unspecified at the root, so it is only compared below it.
+  " f" ++ (if z.atRoot then "?" else showByteOpt z.focusByte)
 
 def emit (s : St) (name : String) (ret : String) : St :=
   { s with
@@ -139,6 +147,7 @@ def emit (s : St) (name : String) (ret : String) : St :=
     step := s.step + 1 }
 
 def showBool (b : Bool) : String := if b then "1" else "0"
+
 
 /-- Is the *explicit* `prune_path` / `prune_ascend` well-defined for this state?
 
@@ -172,8 +181,8 @@ def noPrune : Bool := false
 a following `u8 % 2` byte (`0` = write zipper, `1` = read zipper); ops `27`–`46`
 are write-zipper operations. -/
 
-/-- Number of distinct operations.  Must match `NOPS` in `examples/pathmap_trace.rs`. -/
-def nops : Nat := 47
+/-- Number of distinct operations.  Must match `NOPS` in `examples/common/harness.rs`. -/
+def nops : Nat := 48
 
 /-- A full `k`-path iteration: `descend_first_k_path` followed by
 `to_next_k_path` until it runs out (capped at 32 stops).  Returns the locations
@@ -193,6 +202,11 @@ def onTarget (s : St) (t : Nat) (f : Zip V → α × Zip V) : α × St :=
   if t == 0 then let (a, z) := f s.wz; (a, { s with wz := z })
   else let (a, z) := f s.rz; (a, { s with rz := z })
 
+/-- Apply an observing operation to the zipper selected by `t`. -/
+def onTargetObs (s : St) (t : Nat) (f : Zip V → Bool × Path × Zip V) : Bool × Path × St :=
+  if t == 0 then let (a, o, z) := f s.wz; (a, o, { s with wz := z })
+  else let (a, o, z) := f s.rz; (a, o, { s with rz := z })
+
 /-- Read the zipper selected by `t`. -/
 def getTarget (s : St) (t : Nat) : Zip V := if t == 0 then s.wz else s.rz
 
@@ -210,7 +224,7 @@ def step (s : St) (d : Dec) : Option (St × Dec) := do
             some (emit s "descend_to_byte" (hexByte b), d)
   | 2 => do let (t, d) ← d.mod 2; let (n, d) ← d.mod 8
             let (r, s) := onTarget s t (fun z => z.ascend n)
-            some (emit s "ascend" (showBool r), d)
+            some (emit s "ascend" (toString r), d)
   | 3 => do let (t, d) ← d.mod 2
             let (r, s) := onTarget s t (fun z => z.ascendByte)
             some (emit s "ascend_byte" (showBool r), d)
@@ -219,34 +233,34 @@ def step (s : St) (d : Dec) : Option (St × Dec) := do
             some (emit s "reset" "-", d)
   | 5 => do let (t, d) ← d.mod 2
             let (r, s) := onTarget s t (fun z => z.descendFirstByte)
-            some (emit s "descend_first_byte" (showBool r), d)
+            some (emit s "descend_first_byte" (showByteOpt r), d)
   | 6 => do let (t, d) ← d.mod 2
             let (r, s) := onTarget s t (fun z => z.descendLastByte)
-            some (emit s "descend_last_byte" (showBool r), d)
+            some (emit s "descend_last_byte" (showByteOpt r), d)
   | 7 => do let (t, d) ← d.mod 2; let (i, d) ← d.mod 6
             let (r, s) := onTarget s t (fun z => z.descendIndexedByte i)
-            some (emit s "descend_indexed_byte" (showBool r), d)
+            some (emit s "descend_indexed_byte" (showByteOpt r), d)
   | 8 => do let (t, d) ← d.mod 2
             let (r, s) := onTarget s t (fun z => z.descendUntil)
             some (emit s "descend_until" (showBool r), d)
   | 9 => do let (t, d) ← d.mod 2
             let (r, s) := onTarget s t (fun z => z.ascendUntil)
-            some (emit s "ascend_until" (showBool r), d)
+            some (emit s "ascend_until" (toString r), d)
   | 10 => do let (t, d) ← d.mod 2
              let (r, s) := onTarget s t (fun z => z.ascendUntilBranch)
-             some (emit s "ascend_until_branch" (showBool r), d)
+             some (emit s "ascend_until_branch" (toString r), d)
   | 11 => do let (t, d) ← d.mod 2
              -- Skipped at the zipper root: `ReadZipper::to_next_sibling_byte`
              -- escapes its own root there (see the notes in `Zip.toNextSiblingByte`).
              if (getTarget s t).atRoot then some (emit s "to_next_sibling_byte" "skip", d)
              else
                let (r, s) := onTarget s t (fun z => z.toNextSiblingByte)
-               some (emit s "to_next_sibling_byte" (showBool r), d)
+               some (emit s "to_next_sibling_byte" (showByteOpt r), d)
   | 12 => do let (t, d) ← d.mod 2
              if (getTarget s t).atRoot then some (emit s "to_prev_sibling_byte" "skip", d)
              else
                let (r, s) := onTarget s t (fun z => z.toPrevSiblingByte)
-               some (emit s "to_prev_sibling_byte" (showBool r), d)
+               some (emit s "to_prev_sibling_byte" (showByteOpt r), d)
   | 13 => do let (t, d) ← d.mod 2
              let (r, s) := onTarget s t (fun z => z.toNextStep)
              some (emit s "to_next_step" (showBool r), d)
@@ -401,6 +415,12 @@ def step (s : St) (d : Dec) : Option (St × Dec) := do
              else
                let (r, z) := s.wz.meetKPathInto ops k noPrune
                some (emit { s with wz := z } "meet_k_path_into" (showBool r), d)
+  | 47 => do let (t, d) ← d.mod 2
+             -- The blind-zipper addition: `descend_until` reporting the bytes it
+             -- descended.  The observer's output is a blind zipper's only account
+             -- of where it went, so it is compared byte for byte.
+             let (r, obs, s) := onTargetObs s t (fun z => z.descendUntilObserved)
+             some (emit s "descend_until_observed" (showBool r ++ ":" ++ hexPath obs), d)
   | _ => some (emit s "nop" "-", d)
 
 /-- Run operations until the input is exhausted or `fuel` runs out. -/

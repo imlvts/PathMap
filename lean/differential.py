@@ -49,42 +49,55 @@ def run(binary, path):
 # the first operation whose trace line differs (or by the panic location), so a
 # run can separate "known" from "new" without hiding either.  See
 # lean/README.md for the full write-up of each.
-KNOWN = {
-    # Semantic divergences, each with a standalone reproducer in
-    # `cargo run --example zipper_bug_repros -- <case>`.
-    "ESCAPED-ROOT": "a zipper left its own root: root_prefix_path() changed "
-                    "[root_escape]",
-    "to_next_val": "to_next_val() misses downstream values when the focus was "
-                   "reached by to_next_step() [to_next_val_after_step]",
-    "join_into": "join_into() drops the source subtrie when the destination map "
-                 "is empty [join_into_empty_dst]",
-    "ascend_until": "ascend_until()/ascend_until_branch() corrupt a write zipper "
-                    "rooted at a node boundary [ascend_until_wz]",
-    "remove_branches": "remove_branches() returns true at a dangling tip where "
-                       "nothing was removed [empty_node_leak]",
-    "take_map_restore": "take_map() returns Some(empty map) at a dangling tip "
-                        "[empty_node_leak]",
+# Divergences already traced to confirmed `pathmap` defects.  Each entry is a
+# list of substrings that must all appear in the report, so the table survives
+# the line-number shifts between branches.  Semantic entries key on the name of
+# the first operation whose trace line differs; panic entries key on the file
+# and message.  See lean/FINDINGS.md for the write-up of each, and
+# `cargo run --example zipper_bug_repros -- <case>` for a reproducer.
+KNOWN = [
+    (["ESCAPED-ROOT"],
+     "a zipper left its own root: root_prefix_path() changed [root_escape]"),
+    (["to_next_val"],
+     "to_next_val() misses downstream values when the focus was reached by "
+     "to_next_step() [to_next_val_after_step]"),
+    (["join_into"],
+     "join_into() drops the source subtrie when the destination map is empty "
+     "[join_into_empty_dst]"),
+    (["ascend_until"],
+     "ascend_until()/ascend_until_branch() corrupt a write zipper rooted at a "
+     "node boundary [ascend_until_wz]"),
+    (["remove_branches"],
+     "remove_branches() returns true at a dangling tip where nothing was "
+     "removed [empty_node_leak]"),
+    (["take_map_restore"],
+     "take_map() returns Some(empty map) at a dangling tip [empty_node_leak]"),
     # Panics.  These only abort in a debug build; differential.py prefers the
     # release binary, so they normally surface as wrong values instead.
-    "src/zipper.rs:2288": "to_next_k_path() underflows path_len() on a zipper "
-                          "from read_zipper_at_borrowed_path "
-                          "[to_next_k_path_borrowed]",
-    "src/zipper.rs:417": "to_prev_sibling_byte() asserts path_exists() at a "
-                         "non-existent focus [prev_sibling_missing]",
-    "src/zipper.rs:2801": "excess_key_len() underflows",
-    "src/write_zipper.rs:2802": "ascend_until() leaves the write zipper's node "
-                                "stack inconsistent [ascend_until_wz]",
-    "src/line_list_node.rs:1901": "remove_unmasked_branches() asserts inside a "
-                                  "dangling line node [remove_unmasked_dangling]",
-    "src/trie_ref.rs:171": "TrieRef slice range underflows to a huge usize",
-    "src/trie_node.rs:3063": "make_unique on an empty sentinel node",
-    "src/write_zipper.rs:1413": "set_val unwraps a None root value",
-}
+    (["src/zipper.rs", "subtract with overflow"],
+     "path_len()/excess_key_len() underflow on a zipper whose path buffer is "
+     "not yet prepared [to_next_k_path_borrowed]"),
+    (["src/zipper.rs", "assertion failed: self.path_exists()"],
+     "to_prev_sibling_byte() asserts path_exists() at a non-existent focus "
+     "[prev_sibling_missing]"),
+    (["src/write_zipper.rs", "assertion `left == right`"],
+     "ascend_until() leaves the write zipper's node stack inconsistent "
+     "[ascend_until_wz]"),
+    (["src/write_zipper.rs", "Option::unwrap()"],
+     "set_val unwraps a None root value"),
+    (["src/line_list_node.rs", "is_child_ptr"],
+     "remove_unmasked_branches() asserts inside a dangling line node "
+     "[remove_unmasked_dangling]"),
+    (["src/trie_ref.rs", "out of range"],
+     "TrieRef slice range underflows to a huge usize"),
+    (["src/trie_node.rs", "make_unique"],
+     "make_unique on an empty sentinel node"),
+]
 
 
 def classify(msg):
-    for key, note in KNOWN.items():
-        if key in msg:
+    for keys, note in KNOWN:
+        if all(k in msg for k in keys):
             return note
     return None
 

@@ -189,21 +189,53 @@ they report on whether an empty node happens to be materialised at the focus,
 which is representation state rather than trie state.  The *effects* are still
 compared in full.
 
+## The blind-zipper contract
+
+This branch tracks `blind-zippers-restage`, where `ZipperMoving` no longer
+provides `path()`.  A zipper that does not track its own path is *blind*;
+`path()` and `move_to_path()` moved to a separate `ZipperPath: ZipperMoving`
+trait, which the concrete `ReadZipper`/`WriteZipper` types still implement.
+
+What that cost the model, in full:
+
+* **`Zipper.lean` gained `focusByte`** — the only positional information a blind
+  zipper can read.  Its value at the root is *unspecified* by the trait, so the
+  harness masks it there (`f?` in the trace) and compares it everywhere else.
+* **The movement operations report distance or destination, not a flag.**
+  `ascend`, `ascend_until` and `ascend_until_branch` return the number of bytes
+  ascended; `descend_indexed_byte`, `descend_first_byte`, `descend_last_byte`,
+  `to_next_sibling_byte` and `to_prev_sibling_byte` return the `Option<u8>` byte
+  they moved to.  `ascend_byte` survives as `ascend(1) == 1`.
+* **`descend_until_observed` is new**, and is the interesting addition: a blind
+  zipper learns where it went only from what the operation reports to a
+  `PathObserver`.  The model specifies the reported sequence as the path delta,
+  the harness runs it as op 47 with a `Vec<u8>` observer and compares it byte for
+  byte, and `Laws.descendUntilObservedExact` states the property.
+
+`ZipperWriting`, `Zipper` and `ZipperValues` are unchanged, so `Trie.lean`,
+`Write.lean` and `Map.lean` needed nothing.  Two proved laws were restated
+around the new return types, and one was added — `ascend_accounts`, that the
+count `ascend` reports is exactly the depth the focus lost, which is what a
+blind caller has to rely on.
+
 ## Current agreement
 
 500 random programs (`./lean/differential.py --random 500 --seed 99 --max-fails 0`),
 model versus crate, comparing every return value plus both maps in full:
 
 ```
-397/500 inputs agree exactly
- 95/500 hit one of the classified defects in FINDINGS.md
-  8/500 diverge for reasons not yet classified
+404/500 inputs agree exactly
+ 87/500 hit one of the classified defects in FINDINGS.md
+  9/500 diverge for reasons not yet classified
 ```
 
-The 95 break down as: `to_next_val` after `to_next_step` (26), the `TrieRef`
-slice underflow (20), zippers escaping their root (17), `ascend_until` corrupting
-a write zipper (12), a `set_val` unwrap on `None` (10), `make_unique` on an empty
-sentinel (8), `join_into` dropping the source (2).
+The 87 break down as: `to_next_val` after `to_next_step` (19), `ascend_until`
+corrupting a write zipper (17), zippers escaping their root (16), a `set_val`
+unwrap on `None` (14), the `TrieRef` slice underflow (12), `make_unique` on an
+empty sentinel (7), `join_into` dropping the source (2).
+
+Every defect listed in FINDINGS.md reproduces here exactly as it does on
+`master`; the blind-zipper migration neither fixed nor introduced any of them.
 
 `differential.py` prints that breakdown itself, so new divergences stay visible
 as the known ones are fixed.
