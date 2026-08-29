@@ -282,6 +282,104 @@ wz.remove_unmasked_branches(ByteMask::EMPTY, false);
 //   assertion failed: !self.is_child_ptr::<0>()
 ```
 
+## ArenaCompactTree
+
+The same model, the same operation table, the same trace format -- with an
+`ArenaCompactTree` as the read source instead of a `PathMap`
+(`differential.py --act`, `examples/act_trace.rs`).  ACT is a second
+implementation of the same read specification, so the model holds it to exactly
+the same standard.
+
+Reproducers:
+
+```bash
+cargo run --features arena_compact --example act_bug_repros -- --list
+cargo run --features arena_compact --example act_bug_repros -- <case>
+```
+
+What ACT cannot be asked to do, and why those operations report `skip`: it is
+read-only, and more restrictively it does not implement
+`ZipperInfallibleSubtries` (and implements `ZipperSubtries` only for
+`Value = ()`), so it cannot be the *source* of `graft`, `graft_src_at`,
+`join_into`, `join_map_into`, `meet_into`, `subtract_into`, `restrict` or
+`restricting`, nor of `make_map`.  Everything else -- every read, movement and
+iteration operation, and the whole trie after the run -- is compared in full.
+
+### A1. `val_count()` counts from the zipper root, not the focus
+
+`case: val_count_ignores_focus` -- **silent wrong answer, every focus below the root**
+
+```rust
+// trie: { aa = 1, ab = 2, b = 3 }
+let mut z = act.read_zipper_u64();
+z.descend_to(b"aa");
+z.val_count();          // -> 3, should be 1
+```
+
+`ZipperMoving::val_count` is "the total number of values contained at and below
+the zipper's focus".  ACT's implementation clones the zipper, calls `reset()` --
+which moves to the zipper's *root* -- and counts from there, so the focus is
+ignored:
+
+```rust
+fn val_count(&self) -> usize {
+    let mut zipper = self.clone();
+    zipper.reset();               // <-- discards the focus
+    ...
+}
+```
+
+It even returns a non-zero count at a focus that does not exist.  This is the
+single most common divergence in the ACT run (117 of 500 programs).
+
+### A2. `descend_first_k_path()` only walks the leftmost chain
+
+`case: first_k_path_no_backtrack` -- **silent wrong answer**
+
+```rust
+// trie: { a = 1, bxy = 2 }
+act.read_zipper_u64().descend_first_k_path(2);   // -> false
+map.read_zipper().descend_first_k_path(2);       // -> true, at [b, x]
+```
+
+The operation is specified as a depth-first search for *any* location `k` bytes
+below the focus.  ACT descends the first child `k` times and gives up if that
+one chain runs out, never trying the other branches, so it reports "no path of
+length k" whenever the leftmost branch happens to be shorter than `k`.
+
+### A3. `descend_last_path()` runs one byte past the end of the trie
+
+`case: last_path_overshoots` -- **silent wrong answer, and an off-trie focus that claims to exist**
+
+```rust
+// trie: { [] = 0, [1,0,0,0] = 5 };  zipper rooted at [1,0]
+z.ascend_until();          // a no-op at the root: returns 0
+z.descend_last_path();
+// PathMap: at [0,0]     -- origin [1,0,0,0], the deepest path
+// ACT:     at [0,0,0]   -- origin [1,0,0,0,0], one byte past the end,
+//                          and path_exists() there reports true
+```
+
+Without the preceding `ascend_until()` the two agree, so this is stale internal
+state rather than a wrong descent rule -- the same shape as finding 2 on the
+`PathMap` side.  A related one-byte discrepancy shows up in
+`descend_until_observed` in the fuzz run; I have not minimised that one
+separately, so I am not claiming it is the same defect.
+
+### What passed
+
+* **`from_zipper` round-trips faithfully.**  Values, values at interior nodes,
+  the root value, and dangling paths all survive the arena encoding; the `MAP1`
+  line of every ACT trace is dumped from the ACT rather than from the source
+  map, so this is checked on every program in the run.
+* **`merge_zipper_into_file` matches its specification.**  ACT has no write
+  zipper but can be merged into, and the merge is a join in which the zipper's
+  value wins -- in the model's terms `Trie.join` with the source preferred.
+  `cargo run --features arena_compact --example act_merge_check` checks both
+  halves of that rule (the union of locations, and which value survives a
+  collision) over 300 random prefix-sharing tries, including dangling paths and
+  root values: **300 of 300 match**.
+
 ## 13. Further arithmetic underflows reached from safe API
 
 Found by the in-process invariant run (400 random programs, release build); not

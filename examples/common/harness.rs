@@ -71,6 +71,14 @@ fn show_val(v: Option<&u64>) -> String {
     }
 }
 
+/// Render a status the read source may have declined to produce.
+fn show_status_opt(s: Option<AlgebraicStatus>) -> String {
+    match s {
+        Some(s) => show_status(s).to_string(),
+        None => "skip".to_string(),
+    }
+}
+
 fn show_status(s: AlgebraicStatus) -> &'static str {
     match s {
         AlgebraicStatus::Element => "Element",
@@ -142,6 +150,71 @@ fn dump<Z: ZipperMoving + ZipperPath + ZipperValues<u64>>(z: &mut Z) -> String {
         out.push(format!("{}:{}", hex_path(z.path()), show_val(z.val())));
     }
     out.join(",")
+}
+
+/// The read side of the harness: whatever the write zipper is reading *from*.
+///
+/// Two implementations exist.  A `PathMap` read zipper supports everything.  An
+/// `ArenaCompactTree` zipper supports the whole read and iteration API but
+/// **cannot be a merge source**: `ZipperInfallibleSubtries` is not implemented
+/// for it (and `ZipperSubtries` only for `Value = ()`), so `graft`, `join_into`,
+/// `meet_into`, `subtract_into`, `restrict` and `restricting` cannot take one.
+/// Those methods return `None`/`false` there and the harness emits `skip`, which
+/// the Lean model mirrors in ACT mode.
+///
+/// Keeping this behind a trait means there is still exactly one operation table,
+/// so the two front ends cannot drift apart.
+trait ReadSource:
+    Zipper + ZipperMoving + ZipperPath + ZipperValues<u64> + ZipperAbsolutePath + ZipperIteration
+{
+    /// Depth-first dump of everything below the focus (`fork_read_zipper` + walk).
+    fn dump_fork(&self) -> String;
+    /// `make_map().val_count()`, or `None` if subtries cannot be materialised.
+    fn make_map_val_count(&self) -> Option<usize>;
+
+    fn do_graft<W: ZipperWriting<u64>>(&self, _wz: &mut W) -> bool { false }
+    fn do_graft_src_at<W: ZipperWriting<u64>>(&self, _wz: &mut W, _p: &[u8]) -> bool { false }
+    fn do_join_into<W: ZipperWriting<u64>>(&self, _wz: &mut W) -> Option<AlgebraicStatus> { None }
+    fn do_join_map_into<W: ZipperWriting<u64>>(&self, _wz: &mut W) -> Option<AlgebraicStatus> { None }
+    fn do_meet_into<W: ZipperWriting<u64>>(&self, _wz: &mut W, _prune: bool) -> Option<AlgebraicStatus> { None }
+    fn do_subtract_into<W: ZipperWriting<u64>>(&self, _wz: &mut W, _prune: bool) -> Option<AlgebraicStatus> { None }
+    fn do_restrict<W: ZipperWriting<u64>>(&self, _wz: &mut W) -> Option<AlgebraicStatus> { None }
+    fn do_restricting<W: ZipperWriting<u64>>(&self, _wz: &mut W) -> Option<bool> { None }
+}
+
+impl<'a, 'p> ReadSource for ReadZipperUntracked<'a, 'p, u64> {
+    fn dump_fork(&self) -> String {
+        dump(&mut self.fork_read_zipper())
+    }
+    fn make_map_val_count(&self) -> Option<usize> {
+        Some(self.make_map().val_count())
+    }
+    fn do_graft<W: ZipperWriting<u64>>(&self, wz: &mut W) -> bool {
+        wz.graft(self);
+        true
+    }
+    fn do_graft_src_at<W: ZipperWriting<u64>>(&self, wz: &mut W, p: &[u8]) -> bool {
+        wz.graft_src_at(self, p);
+        true
+    }
+    fn do_join_into<W: ZipperWriting<u64>>(&self, wz: &mut W) -> Option<AlgebraicStatus> {
+        Some(wz.join_into(self))
+    }
+    fn do_join_map_into<W: ZipperWriting<u64>>(&self, wz: &mut W) -> Option<AlgebraicStatus> {
+        Some(wz.join_map_into(self.make_map()))
+    }
+    fn do_meet_into<W: ZipperWriting<u64>>(&self, wz: &mut W, prune: bool) -> Option<AlgebraicStatus> {
+        Some(wz.meet_into(self, prune))
+    }
+    fn do_subtract_into<W: ZipperWriting<u64>>(&self, wz: &mut W, prune: bool) -> Option<AlgebraicStatus> {
+        Some(wz.subtract_into(self, prune))
+    }
+    fn do_restrict<W: ZipperWriting<u64>>(&self, wz: &mut W) -> Option<AlgebraicStatus> {
+        Some(wz.restrict(self))
+    }
+    fn do_restricting<W: ZipperWriting<u64>>(&self, wz: &mut W) -> Option<bool> {
+        Some(wz.restricting(self))
+    }
 }
 
 /// Bind `$z` to the write zipper (`t == 0`) or the read zipper, then run `$e`.
@@ -230,12 +303,9 @@ where
 /// with `check == false`, because it is comparing against the model rather than
 /// asserting, and a crate that violates an invariant should show up as a trace
 /// diff rather than as an abort.
-fn run(bytes: &[u8], check: bool) -> Vec<String> {
-    let mut d = Dec { bytes, pos: 0 };
-    let mut out: Vec<String> = Vec::new();
-
-    // ---- header ----
-    let header = (|| -> Option<(PathMap<u64>, PathMap<u64>, Vec<u8>, Vec<u8>)> {
+/// Decode the header: two seeded maps and the two zipper roots.
+fn decode_header(d: &mut Dec) -> Option<(PathMap<u64>, PathMap<u64>, Vec<u8>, Vec<u8>)> {
+    {
         let mut m0 = PathMap::<u64>::new();
         let n0 = d.modn(8)?;
         for _ in 0..n0 {
@@ -262,20 +332,49 @@ fn run(bytes: &[u8], check: bool) -> Vec<String> {
         if !r0.is_empty() { m0.create_path(&r0); }
         if !r1.is_empty() { m1.create_path(&r1); }
         Some((m0, m1, r0, r1))
-    })();
+    }
+}
 
-    let (mut map0, map1, root0, root1) = match header {
+/// Decode and execute a fuzzer input against a `PathMap` read source.
+///
+/// `allow(dead_code)` because this file is `include!`d by three front ends and
+/// `act_trace` supplies its own entry point instead.
+#[allow(dead_code)]
+fn run(bytes: &[u8], check: bool) -> Vec<String> {
+    let mut d = Dec { bytes, pos: 0 };
+    let (mut map0, map1, root0, root1) = match decode_header(&mut d) {
         Some(x) => x,
         None => return vec!["EMPTY".to_string()],
     };
-
+    let mut out: Vec<String> = Vec::new();
     {
-        let mut wz = map0.write_zipper_at_path(&root0);
         // NOTE: `read_zipper_at_borrowed_path` would panic (release: wrap) in
         // `to_next_k_path`, whose `path_len()` underflows before the path buffer
         // is prepared.  Use the owned-path constructor so that known bug does
         // not abort every run.
         let mut rz = map1.read_zipper_at_path(&root1);
+        run_ops(&mut d, &mut out, &mut map0, &root0, &mut rz, &root1, check);
+    }
+    out.push(format!("MAP0 {}", dump(&mut map0.read_zipper())));
+    out.push(format!("MAP1 {}", dump(&mut map1.read_zipper())));
+    out.push(format!("ROOT0 {}", hex_path(&root0)));
+    out.push(format!("ROOT1 {}", hex_path(&root1)));
+    out
+}
+
+/// Run the operation table.  This is the single shared body: the two front ends
+/// differ only in what they hand in as `rz`.
+fn run_ops<R: ReadSource>(
+    d: &mut Dec,
+    out: &mut Vec<String>,
+    map0: &mut PathMap<u64>,
+    root0: &[u8],
+    rz: &mut R,
+    root1: &[u8],
+    check: bool,
+) {
+    {
+        let mut wz = map0.write_zipper_at_path(root0);
         let mut step = 0usize;
         // Explicit pruning is only well-defined for a zipper at the map root;
         // off it the depth pruned depends on internal node layout.
@@ -304,92 +403,92 @@ fn run(bytes: &[u8], check: bool) -> Vec<String> {
                 0 => {
                     let t = get!(d.modn(2));
                     let p = get!(d.path(6));
-                    tgt!(t, wz, rz, z, z.descend_to(&p));
+                    tgt!(t, wz, *rz, z, z.descend_to(&p));
                     ("descend_to", hex_path(&p))
                 }
                 1 => {
                     let t = get!(d.modn(2));
                     let b = get!(d.path_byte());
-                    tgt!(t, wz, rz, z, z.descend_to_byte(b));
+                    tgt!(t, wz, *rz, z, z.descend_to_byte(b));
                     ("descend_to_byte", format!("{b:02x}"))
                 }
                 2 => {
                     let t = get!(d.modn(2));
                     let n = get!(d.modn(8));
-                    let r = tgt!(t, wz, rz, z, z.ascend(n));
+                    let r = tgt!(t, wz, *rz, z, z.ascend(n));
                     ("ascend", format!("{r}"))
                 }
                 3 => {
                     let t = get!(d.modn(2));
-                    let r = tgt!(t, wz, rz, z, z.ascend_byte());
+                    let r = tgt!(t, wz, *rz, z, z.ascend_byte());
                     ("ascend_byte", show_bool(r).to_string())
                 }
                 4 => {
                     let t = get!(d.modn(2));
-                    tgt!(t, wz, rz, z, z.reset());
+                    tgt!(t, wz, *rz, z, z.reset());
                     ("reset", "-".to_string())
                 }
                 5 => {
                     let t = get!(d.modn(2));
-                    let r = tgt!(t, wz, rz, z, z.descend_first_byte());
+                    let r = tgt!(t, wz, *rz, z, z.descend_first_byte());
                     ("descend_first_byte", show_byte_opt(r))
                 }
                 6 => {
                     let t = get!(d.modn(2));
-                    let r = tgt!(t, wz, rz, z, z.descend_last_byte());
+                    let r = tgt!(t, wz, *rz, z, z.descend_last_byte());
                     ("descend_last_byte", show_byte_opt(r))
                 }
                 7 => {
                     let t = get!(d.modn(2));
                     let i = get!(d.modn(6));
-                    let r = tgt!(t, wz, rz, z, z.descend_indexed_byte(i));
+                    let r = tgt!(t, wz, *rz, z, z.descend_indexed_byte(i));
                     ("descend_indexed_byte", show_byte_opt(r))
                 }
                 8 => {
                     let t = get!(d.modn(2));
-                    let r = tgt!(t, wz, rz, z, z.descend_until());
+                    let r = tgt!(t, wz, *rz, z, z.descend_until());
                     ("descend_until", show_bool(r).to_string())
                 }
                 9 => {
                     let t = get!(d.modn(2));
-                    let r = tgt!(t, wz, rz, z, z.ascend_until());
+                    let r = tgt!(t, wz, *rz, z, z.ascend_until());
                     ("ascend_until", format!("{r}"))
                 }
                 10 => {
                     let t = get!(d.modn(2));
-                    let r = tgt!(t, wz, rz, z, z.ascend_until_branch());
+                    let r = tgt!(t, wz, *rz, z, z.ascend_until_branch());
                     ("ascend_until_branch", format!("{r}"))
                 }
                 11 => {
                     let t = get!(d.modn(2));
                     // Skipped at the zipper root: the native ReadZipper escapes
                     // its own root there. See `Zip.toNextSiblingByte`.
-                    if tgt!(t, wz, rz, z, z.at_root()) {
+                    if tgt!(t, wz, *rz, z, z.at_root()) {
                         ("to_next_sibling_byte", "skip".to_string())
                     } else {
-                        let r = tgt!(t, wz, rz, z, z.to_next_sibling_byte());
+                        let r = tgt!(t, wz, *rz, z, z.to_next_sibling_byte());
                         ("to_next_sibling_byte", show_byte_opt(r))
                     }
                 }
                 12 => {
                     let t = get!(d.modn(2));
-                    if tgt!(t, wz, rz, z, z.at_root()) {
+                    if tgt!(t, wz, *rz, z, z.at_root()) {
                         ("to_prev_sibling_byte", "skip".to_string())
                     } else {
-                        let r = tgt!(t, wz, rz, z, z.to_prev_sibling_byte());
+                        let r = tgt!(t, wz, *rz, z, z.to_prev_sibling_byte());
                         ("to_prev_sibling_byte", show_byte_opt(r))
                     }
                 }
                 13 => {
                     let t = get!(d.modn(2));
-                    let r = tgt!(t, wz, rz, z, z.to_next_step());
+                    let r = tgt!(t, wz, *rz, z, z.to_next_step());
                     ("to_next_step", show_bool(r).to_string())
                 }
                 14 => {
                     // `ZipperIteration` is read-only: the target byte is still
                     // consumed, but the operation always applies to `rz`.
                     let _t = get!(d.modn(2));
-                    let r = rz.to_next_val();
+                    let r = (*rz).to_next_val();
                     ("to_next_val", show_bool(r).to_string())
                 }
                 15 => {
@@ -399,7 +498,7 @@ fn run(bytes: &[u8], check: bool) -> Vec<String> {
                     if k == 0 {
                         ("descend_first_k_path", "skip".to_string())
                     } else {
-                        let r = rz.descend_first_k_path(k);
+                        let r = (*rz).descend_first_k_path(k);
                         ("descend_first_k_path", show_bool(r).to_string())
                     }
                 }
@@ -413,7 +512,7 @@ fn run(bytes: &[u8], check: bool) -> Vec<String> {
                     if k == 0 {
                         out.push(format!(
                             "{step} k_path_walk ret=skip W={} R={}",
-                            fingerprint(&wz, &root0), fingerprint(&rz, &root1)));
+                            fingerprint(&wz, root0), fingerprint(rz, root1)));
                         step += 1;
                         continue;
                     }
@@ -427,59 +526,70 @@ fn run(bytes: &[u8], check: bool) -> Vec<String> {
                 }
                 17 => {
                     let _t = get!(d.modn(2));
-                    let r = rz.descend_last_path();
+                    let r = (*rz).descend_last_path();
                     ("descend_last_path", show_bool(r).to_string())
                 }
                 18 => {
                     let t = get!(d.modn(2));
                     let p = get!(d.path(6));
-                    let n = tgt!(t, wz, rz, z, z.move_to_path(&p));
+                    let n = tgt!(t, wz, *rz, z, z.move_to_path(&p));
                     ("move_to_path", format!("{n}"))
                 }
                 19 => {
                     let t = get!(d.modn(2));
                     let p = get!(d.path(6));
-                    let n = tgt!(t, wz, rz, z, z.descend_to_existing(&p));
+                    let n = tgt!(t, wz, *rz, z, z.descend_to_existing(&p));
                     ("descend_to_existing", format!("{n}"))
                 }
                 20 => {
                     let t = get!(d.modn(2));
                     let p = get!(d.path(6));
-                    let n = tgt!(t, wz, rz, z, z.descend_to_val(&p));
+                    let n = tgt!(t, wz, *rz, z, z.descend_to_val(&p));
                     ("descend_to_val", format!("{n}"))
                 }
                 21 => {
                     let t = get!(d.modn(2));
                     let b = get!(d.path_byte());
-                    let r = tgt!(t, wz, rz, z, z.descend_to_existing_byte(b));
+                    let r = tgt!(t, wz, *rz, z, z.descend_to_existing_byte(b));
                     ("descend_to_existing_byte", show_bool(r).to_string())
                 }
                 22 => {
                     let t = get!(d.modn(2));
                     let n = get!(d.modn(8));
-                    let r = tgt!(t, wz, rz, z, z.descend_until_max_bytes(n));
+                    let r = tgt!(t, wz, *rz, z, z.descend_until_max_bytes(n));
                     ("descend_until_max_bytes", show_bool(r).to_string())
                 }
                 23 => {
                     let t = get!(d.modn(2));
                     let p = get!(d.path(6));
-                    let r = tgt!(t, wz, rz, z, z.descend_to_check(&p));
+                    let r = tgt!(t, wz, *rz, z, z.descend_to_check(&p));
                     ("descend_to_check", show_bool(r).to_string())
                 }
                 24 => {
                     let t = get!(d.modn(2));
                     let p = get!(d.path(6));
-                    let v = tgt!(t, wz, rz, z, show_val(z.val_at(&p)));
+                    let v = tgt!(t, wz, *rz, z, show_val(z.val_at(&p)));
                     ("val_at", v)
                 }
                 25 => {
                     let t = get!(d.modn(2));
-                    let n = tgt!(t, wz, rz, z, z.make_map().val_count());
-                    ("make_map_val_count", format!("{n}"))
+                    let n = if t == 0 {
+                        Some(wz.make_map().val_count())
+                    } else {
+                        (*rz).make_map_val_count()
+                    };
+                    match n {
+                        Some(n) => ("make_map_val_count", format!("{n}")),
+                        None => ("make_map_val_count", "skip".to_string()),
+                    }
                 }
                 26 => {
                     let t = get!(d.modn(2));
-                    let s = tgt!(t, wz, rz, z, dump(&mut z.fork_read_zipper()));
+                    let s = if t == 0 {
+                        dump(&mut wz.fork_read_zipper())
+                    } else {
+                        (*rz).dump_fork()
+                    };
                     ("dump", s)
                 }
                 27 => {
@@ -524,45 +634,60 @@ fn run(bytes: &[u8], check: bool) -> Vec<String> {
                     ("remove_unmasked_branches", hex_path(&canon))
                 }
                 34 => {
-                    wz.graft(&rz);
-                    ("graft", "-".to_string())
+                    let s = if (*rz).do_graft(&mut wz) { "-" } else { "skip" };
+                    ("graft", s.to_string())
                 }
                 35 => {
                     let p = get!(d.path(6));
-                    wz.graft_src_at(&rz, &p);
-                    ("graft_src_at", hex_path(&p))
+                    let s = if (*rz).do_graft_src_at(&mut wz, &p) {
+                        hex_path(&p)
+                    } else {
+                        "skip".to_string()
+                    };
+                    ("graft_src_at", s)
                 }
-                36 => ("join_into", show_status(wz.join_into(&rz)).to_string()),
+                36 => ("join_into", show_status_opt((*rz).do_join_into(&mut wz))),
                 37 => {
                     let leaky = focus_node_empty(&wz);
-                    let st = wz.join_map_into(rz.make_map());
-                    let s = if leaky { "?".to_string() } else { show_status(st).to_string() };
+                    let st = (*rz).do_join_map_into(&mut wz);
+                    let s = if leaky && st.is_some() {
+                        "?".to_string()
+                    } else {
+                        show_status_opt(st)
+                    };
                     ("join_map_into", s)
                 }
                 38 => {
                     let _pr = get!(d.boolean()); // decoded for stream alignment; see `no_prune`
-                    ("meet_into", show_status(wz.meet_into(&rz, no_prune)).to_string())
+                    ("meet_into", show_status_opt((*rz).do_meet_into(&mut wz, no_prune)))
                 }
                 39 => {
                     let _pr = get!(d.boolean()); // decoded for stream alignment; see `no_prune`
                     (
                         "subtract_into",
-                        show_status(wz.subtract_into(&rz, no_prune)).to_string(),
+                        show_status_opt((*rz).do_subtract_into(&mut wz, no_prune)),
                     )
                 }
                 40 => {
                     let leaky = focus_node_empty(&wz);
-                    let st = wz.restrict(&rz);
-                    let s = if leaky { "?".to_string() } else { show_status(st).to_string() };
+                    let st = (*rz).do_restrict(&mut wz);
+                    let s = if leaky && st.is_some() {
+                        "?".to_string()
+                    } else {
+                        show_status_opt(st)
+                    };
                     ("restrict", s)
                 }
                 41 => {
                     // Skipped when either side has nothing below its focus; see
                     // Fuzz.lean and lean/FINDINGS.md #8.
-                    if focus_node_empty(&wz) || focus_node_empty(&rz) {
+                    if focus_node_empty(&wz) || focus_node_empty(rz) {
                         ("restricting", "skip".to_string())
                     } else {
-                        ("restricting", show_bool(wz.restricting(&rz)).to_string())
+                        match (*rz).do_restricting(&mut wz) {
+                            Some(b) => ("restricting", show_bool(b).to_string()),
+                            None => ("restricting", "skip".to_string()),
+                        }
                     }
                 }
                 42 => {
@@ -629,7 +754,7 @@ fn run(bytes: &[u8], check: bool) -> Vec<String> {
                     // zipper's only account of where it went, so it is compared
                     // byte for byte.
                     let mut obs: Vec<u8> = Vec::new();
-                    let r = tgt!(t, wz, rz, z, z.descend_until_observed(&mut obs));
+                    let r = tgt!(t, wz, *rz, z, z.descend_until_observed(&mut obs));
                     (
                         "descend_until_observed",
                         format!("{}:{}", show_bool(r), hex_path(&obs)),
@@ -638,21 +763,16 @@ fn run(bytes: &[u8], check: bool) -> Vec<String> {
                 _ => ("nop", "-".to_string()),
             };
             if check {
-                check_zipper(&wz, "write zipper", &root0);
-                check_zipper(&rz, "read zipper", &root1);
+                check_zipper(&wz, "write zipper", root0);
+                check_zipper(rz, "read zipper", root1);
             }
             out.push(format!(
                 "{step} {name} ret={ret} W={} R={}",
-                fingerprint(&wz, &root0),
-                fingerprint(&rz, &root1)
+                fingerprint(&wz, root0),
+                fingerprint(rz, root1)
             ));
             step += 1;
         }
     }
 
-    out.push(format!("MAP0 {}", dump(&mut map0.read_zipper())));
-    out.push(format!("MAP1 {}", dump(&mut map1.read_zipper())));
-    out.push(format!("ROOT0 {}", hex_path(&root0)));
-    out.push(format!("ROOT1 {}", hex_path(&root1)));
-    out
 }
