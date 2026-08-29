@@ -14,6 +14,7 @@ and diffs the traces.  Both decode the same bytes with the same rules; see
 """
 import argparse
 import os
+import re
 import random
 import subprocess
 import sys
@@ -25,19 +26,26 @@ TRACE_CANDIDATES = [
     os.path.join(ROOT, "target", "release", "examples", "pathmap_trace"),
     os.path.join(ROOT, "target", "debug", "examples", "pathmap_trace"),
 ]
+ACT_CANDIDATES = [
+    os.path.join(ROOT, "target", "release", "examples", "act_trace"),
+    os.path.join(ROOT, "target", "debug", "examples", "act_trace"),
+]
 TIMEOUT = 30
 
 
-def find_trace_bin():
-    for c in TRACE_CANDIDATES:
+def find_trace_bin(act):
+    for c in (ACT_CANDIDATES if act else TRACE_CANDIDATES):
         if os.path.exists(c):
             return c
+    if act:
+        sys.exit("build the ACT side first: "
+                 "cargo build --release --features arena_compact --example act_trace")
     sys.exit("build the crate side first: cargo build --release --example pathmap_trace")
 
 
-def run(binary, path):
+def run(binary, path, extra=()):
     try:
-        p = subprocess.run([binary, path], capture_output=True, timeout=TIMEOUT)
+        p = subprocess.run([binary, *extra, path], capture_output=True, timeout=TIMEOUT)
     except subprocess.TimeoutExpired:
         return None, "TIMEOUT"
     if p.returncode != 0:
@@ -92,7 +100,33 @@ KNOWN = [
      "TrieRef slice range underflows to a huge usize"),
     (["src/trie_node.rs", "make_unique"],
      "make_unique on an empty sentinel node"),
+    # ArenaCompactTree read source (differential.py --act).
+    (["ACT-VALCOUNT-ONLY"],
+     "ACTZipper::val_count() counts from the zipper root, not the focus "
+     "[act: val_count_ignores_focus]"),
+    (["k_path_walk"],
+     "ACTZipper::descend_first_k_path() only walks the leftmost chain "
+     "[act: first_k_path_no_backtrack]"),
+    (["descend_first_k_path"],
+     "ACTZipper::descend_first_k_path() only walks the leftmost chain "
+     "[act: first_k_path_no_backtrack]"),
+    (["descend_last_path"],
+     "ACTZipper::descend_last_path() runs one byte past the end of the trie "
+     "[act: last_path_overshoots]"),
 ]
+
+
+def act_valcount_only(a, b):
+    """Do these two trace lines differ *only* in the read zipper's val_count?
+
+    ACT's val_count is wrong at every focus below the root, so it taints nearly
+    every line and would otherwise make the first-differing-op key meaningless.
+    """
+    pa, pb = a.split(" R=", 1), b.split(" R=", 1)
+    if len(pa) != 2 or len(pb) != 2 or pa[0] != pb[0]:
+        return False
+    strip = lambda t: re.sub(r" n\d+", " n?", t)
+    return strip(pa[1]) == strip(pb[1])
 
 
 def classify(msg):
@@ -102,8 +136,8 @@ def classify(msg):
     return None
 
 
-def compare(path, trace_bin, verbose):
-    model, err = run(ORACLE, path)
+def compare(path, trace_bin, verbose, act=False):
+    model, err = run(ORACLE, path, ("--act",) if act else ())
     if err:
         return "oracle %s" % err
     real, err = run(trace_bin, path)
@@ -111,7 +145,8 @@ def compare(path, trace_bin, verbose):
         return "crate %s" % err
     for i, (a, b) in enumerate(zip(model, real)):
         if a != b:
-            return "line %d\n  model: %s\n  crate: %s" % (i, a, b)
+            tag = "ACT-VALCOUNT-ONLY " if act and act_valcount_only(a, b) else ""
+            return "%sline %d\n  model: %s\n  crate: %s" % (tag, i, a, b)
     if len(model) != len(real):
         return "length %d (model) vs %d (crate)" % (len(model), len(real))
     return None
@@ -124,11 +159,13 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--maxlen", type=int, default=300)
     ap.add_argument("-v", "--verbose", action="store_true")
+    ap.add_argument("--act", action="store_true",
+                    help="use an ArenaCompactTree as the read source")
     ap.add_argument("--max-fails", type=int, default=10,
                     help="stop after this many new divergences (0 = never stop)")
     args = ap.parse_args()
 
-    trace_bin = find_trace_bin()
+    trace_bin = find_trace_bin(args.act)
     files = list(args.files)
     tmpdir = None
     if args.random:
@@ -145,7 +182,7 @@ def main():
     fails = 0
     known = {}
     for path in files:
-        msg = compare(path, trace_bin, args.verbose)
+        msg = compare(path, trace_bin, args.verbose, args.act)
         if msg:
             note = classify(msg)
             if note:

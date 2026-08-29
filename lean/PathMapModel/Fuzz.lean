@@ -130,6 +130,16 @@ structure St where
   rz : Zip V
   out : List String
   step : Nat
+  /-- Read source is an `ArenaCompactTree` rather than a `PathMap`.
+
+  ACT is read-only, and more restrictively it does not implement
+  `ZipperInfallibleSubtries` (and implements `ZipperSubtries` only for
+  `Value = ()`), so it cannot be the *source* of a graft or an algebraic merge.
+  In this mode those operations, and `make_map` on the read side, report `skip`
+  on both sides of the comparison.  Everything else -- every read, movement and
+  iteration operation, and the whole final trie -- is compared in full, which is
+  the point: ACT is a second implementation of the same specification. -/
+  act : Bool
 
 /-- The per-step fingerprint of one zipper. -/
 def fingerprint (z : Zip V) : String :=
@@ -314,8 +324,10 @@ def step (s : St) (d : Dec) : Option (St × Dec) := do
              let z := getTarget s t
              some (emit s "val_at" (showVal (z.valAt p)), d)
   | 25 => do let (t, d) ← d.mod 2
-             let z := getTarget s t
-             some (emit s "make_map_val_count" (toString (z.makeMap.valCount [])), d)
+             if s.act && t == 1 then some (emit s "make_map_val_count" "skip", d)
+             else
+               let z := getTarget s t
+               some (emit s "make_map_val_count" (toString (z.makeMap.valCount [])), d)
   | 26 => do let (t, d) ← d.mod 2
              let z := getTarget s t
              some (emit s "dump" (dumpAt z.trie z.focus), d)
@@ -343,36 +355,52 @@ def step (s : St) (d : Dec) : Option (St × Dec) := do
   | 33 => do let (n, d) ← d.mod 4; let (m, d) ← d.pathN n; let (_pr, d) ← d.bool
              let z := s.wz.removeUnmaskedBranches (ByteMask.ofList m) noPrune
              some (emit { s with wz := z } "remove_unmasked_branches" (hexPath (ByteMask.ofList m)), d)
-  | 34 => do let z := s.wz.graft s.rz
-             some (emit { s with wz := z } "graft" "-", d)
+  | 34 => do if s.act then some (emit s "graft" "skip", d) else
+             do
+               let z := s.wz.graft s.rz
+               some (emit { s with wz := z } "graft" "-", d)
   | 35 => do let (p, d) ← d.path
-             let z := s.wz.graftSrcAt s.rz p
-             some (emit { s with wz := z } "graft_src_at" (hexPath p), d)
-  | 36 => do let (st, z) := s.wz.joinInto ops s.rz
-             some (emit { s with wz := z } "join_into" (toString st), d)
-  | 37 => do let leaky := s.wz.focusNodeIsEmpty
-             let (st, z) := s.wz.joinMapInto ops s.rz.makeMap
-             some (emit { s with wz := z } "join_map_into"
-               (if leaky then "?" else toString st), d)
-  | 38 => do let (_pr, d) ← d.bool
-             let (st, z) := s.wz.meetInto ops s.rz noPrune
-             some (emit { s with wz := z } "meet_into" (toString st), d)
-  | 39 => do let (_pr, d) ← d.bool
-             let (st, z) := s.wz.subtractInto ops s.rz noPrune
-             some (emit { s with wz := z } "subtract_into" (toString st), d)
-  | 40 => do let leaky := s.wz.focusNodeIsEmpty
-             let (st, z) := s.wz.restrict ops s.rz
-             some (emit { s with wz := z } "restrict"
-               (if leaky then "?" else toString st), d)
-  | 41 => do -- Skipped, not merely masked, when either side has nothing below
-             -- its focus: there `restricting` branches on whether an empty node
-             -- happens to be materialised, and the two branches differ in
-             -- *effect*, not just in the reported bool.  See FINDINGS.md #8.
-             if s.wz.focusNodeIsEmpty || s.rz.focusNodeIsEmpty then
-               some (emit s "restricting" "skip", d)
+             if s.act then some (emit s "graft_src_at" "skip", d)
              else
-               let (r, z) := s.wz.restricting s.rz
-               some (emit { s with wz := z } "restricting" (showBool r), d)
+               let z := s.wz.graftSrcAt s.rz p
+               some (emit { s with wz := z } "graft_src_at" (hexPath p), d)
+  | 36 => do if s.act then some (emit s "join_into" "skip", d) else
+             do
+               let (st, z) := s.wz.joinInto ops s.rz
+               some (emit { s with wz := z } "join_into" (toString st), d)
+  | 37 => do if s.act then some (emit s "join_map_into" "skip", d) else
+             do
+               let leaky := s.wz.focusNodeIsEmpty
+               let (st, z) := s.wz.joinMapInto ops s.rz.makeMap
+               some (emit { s with wz := z } "join_map_into"
+                 (if leaky then "?" else toString st), d)
+  | 38 => do let (_pr, d) ← d.bool
+             if s.act then some (emit s "meet_into" "skip", d)
+             else
+               let (st, z) := s.wz.meetInto ops s.rz noPrune
+               some (emit { s with wz := z } "meet_into" (toString st), d)
+  | 39 => do let (_pr, d) ← d.bool
+             if s.act then some (emit s "subtract_into" "skip", d)
+             else
+               let (st, z) := s.wz.subtractInto ops s.rz noPrune
+               some (emit { s with wz := z } "subtract_into" (toString st), d)
+  | 40 => do if s.act then some (emit s "restrict" "skip", d) else
+             do
+               let leaky := s.wz.focusNodeIsEmpty
+               let (st, z) := s.wz.restrict ops s.rz
+               some (emit { s with wz := z } "restrict"
+                 (if leaky then "?" else toString st), d)
+  | 41 => do if s.act then some (emit s "restricting" "skip", d) else
+             do
+               -- Skipped, not merely masked, when either side has nothing below
+               -- its focus: there `restricting` branches on whether an empty node
+               -- happens to be materialised, and the two branches differ in
+               -- *effect*, not just in the reported bool.  See FINDINGS.md #8.
+               if s.wz.focusNodeIsEmpty || s.rz.focusNodeIsEmpty then
+                 some (emit s "restricting" "skip", d)
+               else
+                 let (r, z) := s.wz.restricting s.rz
+                 some (emit { s with wz := z } "restricting" (showBool r), d)
   | 42 => do let (k, d) ← d.mod 4; let (_pr, d) ← d.bool
              -- `join_k_path_into(0)` should be the identity but destroys the
              -- subtrie in pathmap 0.3.1; see `Zip.joinKPathInto`.
@@ -442,7 +470,7 @@ def seed (t : Trie V) (d : Dec) : Nat → Option (Trie V × Dec)
       seed (t.setVal p (UInt64.ofNat v.toNat)).2 d n
 
 /-- Decode the header: two seeded maps and the two zipper roots. -/
-def header (d : Dec) : Option (St × Dec) := do
+def header (d : Dec) (act : Bool) : Option (St × Dec) := do
   let (n0, d) ← d.mod 8
   let (m0, d) ← seed Trie.empty d n0
   let (n1, d) ← d.mod 8
@@ -458,13 +486,13 @@ def header (d : Dec) : Option (St × Dec) := do
   let m1 := if r1.isEmpty then m1 else m1.addPath r1
   some ({ wz := { trie := m0, root := r0, path := [] }
           rz := { trie := m1, root := r1, path := [] }
-          out := [], step := 0 }, d)
+          out := [], step := 0, act := act }, d)
 
 /-! ## Entry point -/
 
 /-- Decode and run a fuzzer input, returning the trace lines. -/
-def run (bytes : ByteArray) (maxSteps : Nat := 256) : List String :=
-  match header { bytes, pos := 0 } with
+def run (bytes : ByteArray) (maxSteps : Nat := 256) (act : Bool := false) : List String :=
+  match header { bytes, pos := 0 } act with
   | none => ["EMPTY"]
   | some (s0, d) =>
       let s := loop maxSteps s0 d

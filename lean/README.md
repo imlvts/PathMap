@@ -104,7 +104,7 @@ focus, such that ..." — instead of as a node walk.
 | `PathMapModel/Map.lean` | the `PathMap` surface, which is the zipper API applied at the root — plus `PathMap::restrict`, the one genuinely map-level operation |
 | `PathMapModel/Spec.lean` | §1 proved laws (the cursor algebra); §2 checkable laws (metamorphic properties) |
 | `PathMapModel/Check.lean` | `#guard`s: regression fixtures transcribed from `src/write_zipper.rs`'s own tests, and the §2 laws over a battery of tries |
-| `PathMapModel/Fuzz.lean` | the wire format, the operation table, and the trace producer |
+| `PathMapModel/Fuzz.lean` | the wire format, the operation table, and the trace producer (including `--act` mode) |
 | `Main.lean` | the `pathmap-oracle` binary |
 
 ## What is proved versus what is checked
@@ -239,6 +239,42 @@ Every defect listed in FINDINGS.md reproduces here exactly as it does on
 
 `differential.py` prints that breakdown itself, so new divergences stay visible
 as the known ones are fixed.
+
+## ArenaCompactTree as the read source
+
+`ArenaCompactTree` is a second implementation of the same *read* specification,
+so the model can hold it to the same standard without any new modelling:
+
+```bash
+cargo build --release --features arena_compact --example act_trace
+./lean/differential.py --act --random 500 --seed 99 --max-fails 0
+```
+
+`examples/act_trace.rs` builds an ACT from map1 with `from_zipper` and runs the
+identical operation table against an `ACTZipper`.  There is still exactly one
+op table: the merge operations sit behind a `ReadSource` trait, whose ACT
+implementation declines them, so the two front ends cannot drift apart.  The
+model's matching mode is `pathmap-oracle --act`.
+
+ACT is read-only, and more restrictively is not a `ZipperInfallibleSubtries`, so
+it cannot be the *source* of a graft or an algebraic merge; those operations and
+`make_map` report `skip` on both sides.  Everything else is compared in full,
+including the final trie -- which is dumped *from the ACT*, so `from_zipper` is
+under test on every program.
+
+```
+248/500 inputs agree exactly
+250/500 hit a classified defect (three of them ACT-specific)
+  2/500 diverge for reasons not yet classified
+```
+
+Three ACT defects, all silent wrong answers, are written up in FINDINGS.md:
+`val_count()` counts from the zipper root rather than the focus (117 of 500
+programs), `descend_first_k_path()` only walks the leftmost chain, and
+`descend_last_path()` can run one byte past the end of the trie.  `from_zipper`
+round-trips faithfully, and `merge_zipper_into_file` -- ACT's one write-shaped
+operation -- matches its specification on all 300 cases of
+`examples/act_merge_check.rs`.
 
 ## The libFuzzer target
 

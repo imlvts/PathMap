@@ -6,7 +6,7 @@ crate panic) while deleting bytes, so the result is a minimal reproducer.
 
     ./lean/shrink.py <input-file> [-o out.bin]
 """
-import argparse, os, subprocess, sys
+import argparse, os, re, subprocess, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ORACLE = os.path.join(ROOT, "lean", ".lake", "build", "bin", "pathmap-oracle")
@@ -15,7 +15,10 @@ ORACLE = os.path.join(ROOT, "lean", ".lake", "build", "bin", "pathmap-oracle")
 # whichever panic it hits first.  `--debug` shrinks toward a panic on purpose.
 TRACE_RELEASE = os.path.join(ROOT, "target", "release", "examples", "pathmap_trace")
 TRACE_DEBUG = os.path.join(ROOT, "target", "debug", "examples", "pathmap_trace")
+ACT_RELEASE = os.path.join(ROOT, "target", "release", "examples", "act_trace")
+ACT_DEBUG = os.path.join(ROOT, "target", "debug", "examples", "act_trace")
 TRACE = TRACE_RELEASE
+ORACLE_ARGS = []
 TMP = os.path.join(ROOT, "lean", ".shrink.bin")
 
 
@@ -24,7 +27,7 @@ def signature(blob):
     with open(TMP, "wb") as f:
         f.write(blob)
     try:
-        m = subprocess.run([ORACLE, TMP], capture_output=True, timeout=20)
+        m = subprocess.run([ORACLE, *ORACLE_ARGS, TMP], capture_output=True, timeout=20)
         c = subprocess.run([TRACE, TMP], capture_output=True, timeout=20)
     except subprocess.TimeoutExpired:
         return "TIMEOUT"
@@ -44,7 +47,14 @@ def signature(blob):
     cl = c.stdout.decode().splitlines()
     for a, b in zip(ml, cl):
         if a != b:
-            return "DIFF " + a.split()[1]
+            # Distinguish "only the read zipper's val_count differs" from a real
+            # divergence on the same operation, so the shrinker cannot drift
+            # from one class to the other.
+            pa, pb = a.split(" R=", 1), b.split(" R=", 1)
+            strip = lambda t: re.sub(r" n\d+", " n?", t)
+            vc = (len(pa) == 2 and len(pb) == 2 and pa[0] == pb[0]
+                  and strip(pa[1]) == strip(pb[1]))
+            return "DIFF %s%s" % ("valcount-only " if vc else "", a.split()[1])
     if len(ml) != len(cl):
         return "DIFF length"
     return None
@@ -84,11 +94,17 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("input")
     ap.add_argument("-o", "--out", default=None)
+    ap.add_argument("--act", action="store_true",
+                    help="ArenaCompactTree read source")
     ap.add_argument("--debug", action="store_true",
                     help="use the debug build, to shrink toward a panic")
     args = ap.parse_args()
-    global TRACE
-    TRACE = TRACE_DEBUG if args.debug else TRACE_RELEASE
+    global TRACE, ORACLE_ARGS
+    if args.act:
+        TRACE = ACT_DEBUG if args.debug else ACT_RELEASE
+        ORACLE_ARGS = ["--act"]
+    else:
+        TRACE = TRACE_DEBUG if args.debug else TRACE_RELEASE
     blob = open(args.input, "rb").read()
     small, sig = shrink(blob)
     out = args.out or (args.input + ".min")
@@ -99,7 +115,7 @@ def main():
     with open(TMP, "wb") as f:
         f.write(small)
     print("--- model ---")
-    sys.stdout.write(subprocess.run([ORACLE, out], capture_output=True).stdout.decode())
+    sys.stdout.write(subprocess.run([ORACLE, *ORACLE_ARGS, out], capture_output=True).stdout.decode())
     print("--- crate ---")
     r = subprocess.run([TRACE, out], capture_output=True)
     sys.stdout.write(r.stdout.decode())
