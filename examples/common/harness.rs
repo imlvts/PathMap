@@ -15,7 +15,7 @@
 
 
 /// Number of distinct operations. Must match `PathMapModel.Fuzz.nops`.
-const NOPS: usize = 47;
+const NOPS: usize = 48;
 /// Maximum operations executed. Must match the `maxSteps` default in `Fuzz.run`.
 const MAX_STEPS: usize = 256;
 /// Maximum entries in a `dump`. Must match `Fuzz.dumpAt`.
@@ -83,25 +83,36 @@ fn show_bool(b: bool) -> &'static str {
     if b { "1" } else { "0" }
 }
 
+/// Render the `Option<u8>` the movement operations now return under the
+/// blind-zipper contract: the byte moved to, or `-` for "did not move".
+fn show_byte_opt(b: Option<u8>) -> String {
+    match b {
+        None => "-".to_string(),
+        Some(b) => format!("{b:02x}"),
+    }
+}
+
 /// Per-step fingerprint of a zipper.
 ///
 /// `expected_root` is the root the zipper was created at.  A zipper must never
 /// leave it, so a mismatch is tagged `ESCAPED-ROOT` — the model can never
 /// produce that tag, which lets `differential.py` recognise the escape bug
 /// instead of reporting it as an unexplained state divergence.
-fn fingerprint<Z: ZipperMoving + ZipperValues<u64> + ZipperAbsolutePath>(
+fn fingerprint<Z: ZipperMoving + ZipperPath + ZipperValues<u64> + ZipperAbsolutePath>(
     z: &Z,
     expected_root: &[u8],
 ) -> String {
     format!(
-        "{}{} o{} e{} v{} c{} n{}",
+        "{}{} o{} e{} v{} c{} n{} f{}",
         if z.root_prefix_path() == expected_root { "" } else { "ESCAPED-ROOT " },
         hex_path(z.path()),
         hex_path(z.origin_path()),
         show_bool(z.path_exists()),
         show_val(z.val()),
         z.child_count(),
-        z.val_count()
+        z.val_count(),
+        // `focus_byte` is unspecified at the root, so it is only compared below it.
+        if z.at_root() { "?".to_string() } else { show_byte_opt(z.focus_byte()) }
     )
 }
 
@@ -116,7 +127,7 @@ fn focus_node_empty<Z: Zipper>(z: &Z) -> bool {
 }
 
 /// Depth-first dump of everything at and below the zipper's root, relative to it.
-fn dump<Z: ZipperMoving + ZipperValues<u64>>(z: &mut Z) -> String {
+fn dump<Z: ZipperMoving + ZipperPath + ZipperValues<u64>>(z: &mut Z) -> String {
     z.reset();
     let mut out = vec![format!("{}:{}", hex_path(z.path()), show_val(z.val()))];
     while out.len() < DUMP_CAP && z.to_next_step() {
@@ -154,7 +165,7 @@ macro_rules! tgt {
 /// trait documentation or forced by the meaning of the accessors.
 fn check_zipper<Z>(z: &Z, label: &str, expected_root: &[u8])
 where
-    Z: ZipperMoving + ZipperValues<u64> + ZipperAbsolutePath,
+    Z: ZipperMoving + ZipperPath + ZipperValues<u64> + ZipperAbsolutePath,
 {
     // `at_root` is defined as "the path back to the root is empty".
     assert_eq!(
@@ -176,6 +187,15 @@ where
         expected_root,
         "{label}: the zipper escaped its own root"
     );
+    // Below the root, `focus_byte` must be the last byte of the path.  (At the
+    // root the trait leaves it unspecified, so nothing is checked there.)
+    if !z.at_root() {
+        assert_eq!(
+            z.focus_byte(),
+            z.path().last().copied(),
+            "{label}: focus_byte disagrees with path()"
+        );
+    }
     // A value can only sit on a path that exists.
     if z.is_val() {
         assert!(z.path_exists(), "{label}: value on a non-existent path");
@@ -297,7 +317,7 @@ fn run(bytes: &[u8], check: bool) -> Vec<String> {
                     let t = get!(d.modn(2));
                     let n = get!(d.modn(8));
                     let r = tgt!(t, wz, rz, z, z.ascend(n));
-                    ("ascend", show_bool(r).to_string())
+                    ("ascend", format!("{r}"))
                 }
                 3 => {
                     let t = get!(d.modn(2));
@@ -312,18 +332,18 @@ fn run(bytes: &[u8], check: bool) -> Vec<String> {
                 5 => {
                     let t = get!(d.modn(2));
                     let r = tgt!(t, wz, rz, z, z.descend_first_byte());
-                    ("descend_first_byte", show_bool(r).to_string())
+                    ("descend_first_byte", show_byte_opt(r))
                 }
                 6 => {
                     let t = get!(d.modn(2));
                     let r = tgt!(t, wz, rz, z, z.descend_last_byte());
-                    ("descend_last_byte", show_bool(r).to_string())
+                    ("descend_last_byte", show_byte_opt(r))
                 }
                 7 => {
                     let t = get!(d.modn(2));
                     let i = get!(d.modn(6));
                     let r = tgt!(t, wz, rz, z, z.descend_indexed_byte(i));
-                    ("descend_indexed_byte", show_bool(r).to_string())
+                    ("descend_indexed_byte", show_byte_opt(r))
                 }
                 8 => {
                     let t = get!(d.modn(2));
@@ -333,12 +353,12 @@ fn run(bytes: &[u8], check: bool) -> Vec<String> {
                 9 => {
                     let t = get!(d.modn(2));
                     let r = tgt!(t, wz, rz, z, z.ascend_until());
-                    ("ascend_until", show_bool(r).to_string())
+                    ("ascend_until", format!("{r}"))
                 }
                 10 => {
                     let t = get!(d.modn(2));
                     let r = tgt!(t, wz, rz, z, z.ascend_until_branch());
-                    ("ascend_until_branch", show_bool(r).to_string())
+                    ("ascend_until_branch", format!("{r}"))
                 }
                 11 => {
                     let t = get!(d.modn(2));
@@ -348,7 +368,7 @@ fn run(bytes: &[u8], check: bool) -> Vec<String> {
                         ("to_next_sibling_byte", "skip".to_string())
                     } else {
                         let r = tgt!(t, wz, rz, z, z.to_next_sibling_byte());
-                        ("to_next_sibling_byte", show_bool(r).to_string())
+                        ("to_next_sibling_byte", show_byte_opt(r))
                     }
                 }
                 12 => {
@@ -357,7 +377,7 @@ fn run(bytes: &[u8], check: bool) -> Vec<String> {
                         ("to_prev_sibling_byte", "skip".to_string())
                     } else {
                         let r = tgt!(t, wz, rz, z, z.to_prev_sibling_byte());
-                        ("to_prev_sibling_byte", show_bool(r).to_string())
+                        ("to_prev_sibling_byte", show_byte_opt(r))
                     }
                 }
                 13 => {
@@ -601,6 +621,19 @@ fn run(bytes: &[u8], check: bool) -> Vec<String> {
                             show_bool(wz.meet_k_path_into(k, no_prune)).to_string(),
                         )
                     }
+                }
+                47 => {
+                    let t = get!(d.modn(2));
+                    // The blind-zipper addition: `descend_until` reporting the
+                    // bytes it descended.  The observer's output is a blind
+                    // zipper's only account of where it went, so it is compared
+                    // byte for byte.
+                    let mut obs: Vec<u8> = Vec::new();
+                    let r = tgt!(t, wz, rz, z, z.descend_until_observed(&mut obs));
+                    (
+                        "descend_until_observed",
+                        format!("{}:{}", show_bool(r), hex_path(&obs)),
+                    )
                 }
                 _ => ("nop", "-".to_string()),
             };

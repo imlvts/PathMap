@@ -26,6 +26,27 @@ then reports `false` while `path()` still reports the full path and `ascend`
 still walks back up.  The model reflects this by keeping `path` an unconstrained
 list of bytes.
 
+## The blind-zipper contract
+
+`ZipperMoving` no longer provides `path()`: a zipper that does not track its own
+path is a *blind* zipper, and `path()` / `move_to_path()` live in the separate
+`ZipperPath: ZipperMoving` trait.  The model keeps `path` as a field because it
+has to represent the location somehow, but it mirrors the split in what each
+operation is allowed to *observe*: `focusByte` is the only positional
+information a blind zipper can read, and its value at the root is deliberately
+unspecified.
+
+The migration also changed what the movement operations report.  Instead of a
+bare "did it move" flag they now return how far, or where to:
+
+* `ascend`, `ascend_until`, `ascend_until_branch` return the **number of bytes
+  ascended** (`0` meaning "was already at the root") rather than a `bool`.
+* `descend_indexed_byte`, `descend_first_byte`, `descend_last_byte`,
+  `to_next_sibling_byte`, `to_prev_sibling_byte` return `Option<u8>` -- the byte
+  moved to -- rather than a `bool`.
+* `descend_until` gains an `_observed` form that reports the bytes it descended
+  to a `PathObserver`, which is how a blind zipper learns where it ended up.
+
 ## Depth-first order is lexicographic order
 
 Every iteration primitive is specified as "the `Path.lt`-least existing location
@@ -73,6 +94,16 @@ def childMask : ByteMask := z.trie.childMask z.focus
 
 /-- `Zipper::child_count`. -/
 def childCount : Nat := z.childMask.length
+
+/-- `ZipperMoving::focus_byte`: the byte last descended to reach the focus.
+
+**Unspecified at the root.**  A zipper that retains knowledge of the trie above
+its root may return the byte leading to that root; one that does not, or one
+rooted at the trie root, returns `none`.  So a `some` here does not mean the
+zipper has descended, and callers needing that distinction must ask `at_root`.
+The model returns the last byte of the relative path, which is `none` at the
+root; the harness masks the value there rather than comparing it. -/
+def focusByte : Option UInt8 := z.path.getLast?
 
 /-! ## `trait ZipperValues` / `ZipperReadOnlyValues` -/
 
@@ -151,19 +182,20 @@ def descendToExistingByte (b : UInt8) : Bool × Zip V :=
   if z'.pathExists then (true, z') else (false, z)
 
 /-- `ZipperMoving::descend_indexed_byte`: descend into the `idx`-th child in
-ascending byte order.  Out-of-range indices do nothing. -/
-def descendIndexedByte (idx : Nat) : Bool × Zip V :=
+ascending byte order, returning the byte moved to.  Out-of-range indices do
+nothing and return `none`. -/
+def descendIndexedByte (idx : Nat) : Option UInt8 × Zip V :=
   match z.childMask.indexedBit idx with
-  | some b => (true, z.descendToByte b)
-  | none => (false, z)
+  | some b => (some b, z.descendToByte b)
+  | none => (none, z)
 
 /-- `ZipperMoving::descend_first_byte`. -/
-def descendFirstByte : Bool × Zip V := z.descendIndexedByte 0
+def descendFirstByte : Option UInt8 × Zip V := z.descendIndexedByte 0
 
 /-- `ZipperMoving::descend_last_byte`. -/
-def descendLastByte : Bool × Zip V :=
+def descendLastByte : Option UInt8 × Zip V :=
   let c := z.childCount
-  if c == 0 then (false, z) else z.descendIndexedByte (c - 1)
+  if c == 0 then (none, z) else z.descendIndexedByte (c - 1)
 
 /-- `ZipperMoving::descend_until`: descend while there is exactly one child,
 stopping on a value.  A no-op on a branch, a leaf, or a non-existent path. -/
@@ -178,6 +210,16 @@ where
           if z'.isVal then (true, z') else go n z' true
         else (moved, z)
 
+/-- `ZipperMoving::descend_until_observed`: `descend_until`, reporting each byte
+it descends to a `PathObserver`.
+
+For the `Vec<u8>` observer -- the one the harness uses -- the reported sequence
+is exactly the path delta, which is the only way a blind zipper can learn where
+it ended up.  That equality is the property worth checking. -/
+def descendUntilObserved : Bool × Path × Zip V :=
+  let (moved, z2) := z.descendUntil
+  (moved, z2.path.drop z.path.length, z2)
+
 /-- `ZipperMoving::descend_until_max_bytes`: `descend_until`, then ascend back to
 at most `maxBytes` below the starting depth. -/
 def descendUntilMaxBytes (maxBytes : Nat) : Bool × Zip V :=
@@ -191,37 +233,45 @@ def descendUntilMaxBytes (maxBytes : Nat) : Bool × Zip V :=
 /-! ## `trait ZipperMoving` — ascent -/
 
 /-- `ZipperMoving::ascend`: ascend `steps` bytes, clamping at the zipper root.
-Returns `false` (and stops at the root) if the root is fewer than `steps` away. -/
-def ascend (steps : Nat) : Bool × Zip V :=
-  if steps ≤ z.path.length then (true, { z with path := z.path.take (z.path.length - steps) })
-  else (false, { z with path := [] })
+Returns the **number of bytes actually ascended**, which is smaller than `steps`
+when the root was closer than that. -/
+def ascend (steps : Nat) : Nat × Zip V :=
+  let n := min steps z.path.length
+  (n, { z with path := z.path.take (z.path.length - n) })
 
-/-- `ZipperMoving::ascend_byte`. -/
-def ascendByte : Bool × Zip V := z.ascend 1
+/-- `ZipperMoving::ascend_byte`: still a `bool`, defined as `ascend(1) == 1`. -/
+def ascendByte : Bool × Zip V :=
+  let (n, z2) := z.ascend 1
+  (n == 1, z2)
 
 /-- `ZipperMoving::ascend_until`: ascend to the nearest strict ancestor that
-carries a value or branches, or to the root. -/
-def ascendUntil : Bool × Zip V :=
-  if z.atRoot then (false, z)
-  else (true, go z.path.length z)
+carries a value or branches, or to the root.  Returns the number of bytes
+ascended; `0` means the zipper was already at its root. -/
+def ascendUntil : Nat × Zip V :=
+  if z.atRoot then (0, z)
+  else
+    let z2 := go z.path.length z
+    (z.path.length - z2.path.length, z2)
 where
   go : Nat → Zip V → Zip V
     | 0, z => z
     | n + 1, z =>
-        let z' := (z.ascendByte).2
-        if z'.atRoot || z'.isVal || z'.childCount > 1 then z' else go n z'
+        let z2 := (z.ascendByte).2
+        if z2.atRoot || z2.isVal || z2.childCount > 1 then z2 else go n z2
 
 /-- `ZipperMoving::ascend_until_branch`: like `ascend_until`, but values do not
-stop the ascent. -/
-def ascendUntilBranch : Bool × Zip V :=
-  if z.atRoot then (false, z)
-  else (true, go z.path.length z)
+stop the ascent.  Returns the number of bytes ascended. -/
+def ascendUntilBranch : Nat × Zip V :=
+  if z.atRoot then (0, z)
+  else
+    let z2 := go z.path.length z
+    (z.path.length - z2.path.length, z2)
 where
   go : Nat → Zip V → Zip V
     | 0, z => z
     | n + 1, z =>
-        let z' := (z.ascendByte).2
-        if z'.atRoot || z'.childCount > 1 then z' else go n z'
+        let z2 := (z.ascendByte).2
+        if z2.atRoot || z2.childCount > 1 then z2 else go n z2
 
 /-! ## `trait ZipperMoving` — lateral movement -/
 
@@ -239,24 +289,32 @@ and a zipper rooted at `[0,0,1]`, `to_next_sibling_byte()` returns `true`,
 containment a `ZipperHead` relies on to hand out non-overlapping zippers.  The
 model specifies the documented behaviour; the differential harness skips the
 operation at the root so the known bug does not mask others. -/
-def toNextSiblingByte : Bool × Zip V :=
-  match z.path.getLast? with
-  | none => (false, z)
+def toNextSiblingByte : Option UInt8 × Zip V :=
+  -- Now keyed on `focus_byte`, whose value at the root is unspecified, so the
+  -- `at_root` guard is what keeps the zipper inside its own subtrie.
+  match z.focusByte with
+  | none => (none, z)
   | some cur =>
-      let up := (z.ascendByte).2
-      match up.childMask.nextBit cur with
-      | some b => (true, up.descendToByte b)
-      | none => (false, z)
+      if z.atRoot then (none, z)
+      else
+        let up := (z.ascendByte).2
+        match up.childMask.nextBit cur with
+        | some b => (some b, up.descendToByte b)
+        | none => (none, z)
 
 /-- `ZipperMoving::to_prev_sibling_byte`. -/
-def toPrevSiblingByte : Bool × Zip V :=
-  match z.path.getLast? with
-  | none => (false, z)
+def toPrevSiblingByte : Option UInt8 × Zip V :=
+  -- Now keyed on `focus_byte`, whose value at the root is unspecified, so the
+  -- `at_root` guard is what keeps the zipper inside its own subtrie.
+  match z.focusByte with
+  | none => (none, z)
   | some cur =>
-      let up := (z.ascendByte).2
-      match up.childMask.prevBit cur with
-      | some b => (true, up.descendToByte b)
-      | none => (false, z)
+      if z.atRoot then (none, z)
+      else
+        let up := (z.ascendByte).2
+        match up.childMask.prevBit cur with
+        | some b => (some b, up.descendToByte b)
+        | none => (none, z)
 
 /-- `ZipperMoving::move_to_path`: jump to `p` relative to the zipper root.
 Returns the number of bytes shared between the old and the new location. -/

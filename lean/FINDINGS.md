@@ -1,7 +1,15 @@
 # Findings
 
-Defects in `pathmap` 0.3.1 (commit `2192ebc`, default features) turned up while
-writing the Lean model in this directory and running it as a differential oracle.
+Defects in `pathmap` 0.3.1 turned up while writing the Lean model in this
+directory and running it as a differential oracle.
+
+**Branch note.**  This is the `blind-zippers-restage` branch.  Every finding
+below was first confirmed on `master` (commit `2192ebc`) and then re-confirmed
+here after porting the model to the blind-zipper contract: all twelve reproduce
+unchanged.  The migration moved some line numbers (`write_zipper.rs:2802` ->
+`2823`, `zipper.rs:2288` -> `2585`, `zipper.rs:417` -> `419`) but changed no
+behaviour any of these depend on.  It did let finding 3 be pinned down exactly —
+see the root cause noted there.
 
 Every entry has a standalone reproducer:
 
@@ -62,11 +70,26 @@ rz.to_next_sibling_byte();          // -> true
 // at_root() == true, path() == [], but origin_path() == [0,0,3], val() == Some(161)
 ```
 
-`ZipperMoving::to_next_sibling_byte` is documented to return `false` at the root
-(there is no last byte), and the `ZipperMoving` default implementation does.  The
-native `ReadZipper` instead consults the last byte of the *absolute* origin path,
-walks up past its own root, and lands on a sibling.  `to_next_step` reaches the
-same escape through `to_next_sibling_byte`.
+`ZipperMoving::to_next_sibling_byte` returns `None` at the root — there is no
+last byte to move away from — and the trait's default implementation does, since
+its `ascend_byte()` guard fails there.  `ReadZipperCore` overrides it, and the
+override guards on the wrong thing:
+
+```rust
+// src/zipper.rs, ReadZipperCore::to_next_sibling_byte
+self.prepare_buffers();
+if self.prefix_buf.len() == 0 {   // <-- absolute path length,
+    return None                   //     not the zipper's own root offset
+}
+```
+
+`prefix_buf` holds the *absolute* path, so a zipper rooted at a non-empty path
+sails past the guard, and `to_sibling` then overwrites the last byte of
+`prefix_buf` — a byte inside the zipper's own root prefix.  Guarding on
+`at_root()` (equivalently `prefix_buf.len() == origin_path.len()`) is what the
+default implementation effectively does and what this needs.
+
+`to_next_step` reaches the same escape through `to_next_sibling_byte`.
 
 This is the invariant `ZipperHead` depends on to hand out non-overlapping
 zippers: an escaped read zipper can observe a region another zipper is
