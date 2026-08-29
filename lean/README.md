@@ -1,0 +1,241 @@
+# A Lean model of the `pathmap` zipper
+
+An executable formal specification of `pathmap`'s trie and zipper API, written
+in Lean 4, plus the harness that uses it as an oracle for differential fuzzing
+of the real crate.
+
+Two things live here:
+
+1. **The model** (`PathMapModel/`) — a total, executable definition of what each
+   API function *means*, with the laws relating them.
+2. **The harness** (`Main.lean`, `differential.py`, `shrink.py`, and
+   `../examples/common/harness.rs`) — the machinery that runs the same generated
+   program against the model and against `pathmap`, and diffs the results.
+
+Everything the fuzzing found is written up in [FINDINGS.md](FINDINGS.md), with
+standalone reproducers in `cargo run --example zipper_bug_repros`.
+
+## Build and run
+
+```bash
+# the model, its build-time law checks, and the oracle binary
+cd lean && lake build
+
+# the crate side of the differential harness
+cargo build --release --example pathmap_trace
+
+# generate random programs and compare model against crate
+./lean/differential.py --random 500 --seed 1
+
+# or replay a corpus produced by the fuzzer
+./lean/differential.py fuzz/corpus/zipper_ops/*
+
+# minimise an input that diverges (or that panics)
+./lean/shrink.py path/to/input.bin
+```
+
+`lake build` also checks every `#guard` in `PathMapModel/Check.lean`, so a build
+failure there means a law or a regression fixture broke.
+
+## Why a model rather than more property tests
+
+A property test asserts things you already suspect.  A model asserts *everything*
+at once: for each generated program the harness compares every return value and
+the entire resulting trie against what the specification says should happen.  The
+interesting consequence is that writing the model is where most of the value was
+— several defects in [FINDINGS.md](FINDINGS.md) were found by trying to state
+the semantics precisely and discovering there was no consistent statement to
+make, before a single fuzz input had been generated.
+
+## The representation
+
+Everything rests on one observation.  A `pathmap` trie is **not** just a
+path→value map: `create_path` makes a location that exists without carrying a
+value, and `remove_val(false)` leaves one behind.  So the observable state is two
+finite objects:
+
+```lean
+structure Trie (V : Type) where
+  vals  : List (Path × V)   -- the finite path -> value map
+  paths : List Path         -- the prefix-closed set of locations that exist
+```
+
+Both are kept in canonical form (sorted, deduplicated, `paths` prefix-closed and
+containing every key of `vals`), so **structural equality of `Trie`s is
+observational equality** — which is exactly what is needed to decide
+`AlgebraicStatus::Identity` versus `Element`.
+
+A zipper is that trie plus two paths:
+
+```lean
+structure Zip (V : Type) where
+  trie : Trie V   -- the map (a snapshot, for a read zipper; live, for a write zipper)
+  root : Path     -- root_prefix_path(): where the zipper was created
+  path : Path     -- path(): the relative path to the focus
+```
+
+`origin_path() = root ++ path`.  The focus is allowed not to exist — `descend_to`
+moves anywhere — so `path` is an unconstrained list of bytes.
+
+Two distinctions the model keeps explicit because `pathmap` depends on them:
+
+* **A node is what lies strictly below a location.**  The value *at* a location
+  lives in its parent's cell.  `get_focus`, `graft_internal` and every `*_dyn`
+  algebraic primitive operate on nodes, so they never touch the focus value;
+  `Trie.subtrie` includes it, `Zip.focusNode` does not.
+* **The `graft_root_vals` feature is on by default**, so `graft`, `graft_map`,
+  `make_map`, `take_map`, `join_map_into`, `meet_into` and `subtract_into` handle
+  the focus value in a separate step — while `join_into` does not.  The model
+  reproduces that asymmetry rather than smoothing it over.
+
+Depth-first traversal order is exactly lexicographic order on paths (a proper
+prefix sorts before its extensions), so every iteration primitive is specified
+denotationally — "the `Path.lt`-least existing location strictly after the
+focus, such that ..." — instead of as a node walk.
+
+## Layout
+
+| file | contents |
+| --- | --- |
+| `PathMapModel/Basic.lean` | paths, the prefix and lexicographic orders, `ByteMask`, `ValOps`/`ValRes` (the fragment of `Lattice`/`DistributiveLattice` the trie consumes, including the left-biased `u64` instance), `AlgebraicStatus` |
+| `PathMapModel/Trie.lean` | the trie, its four observations, sub-tries and grafting, point updates, pruning, and the trie-level `join` / `meet` / `sub` / `prestrict` / `drop_head` |
+| `PathMapModel/Zipper.lean` | the read API: `trait Zipper`, `ZipperValues`, `ZipperMoving`, `ZipperIteration`, `ZipperForking`, `ZipperAbsolutePath` |
+| `PathMapModel/Write.lean` | the write API: `ZipperWriting` in full |
+| `PathMapModel/Map.lean` | the `PathMap` surface, which is the zipper API applied at the root — plus `PathMap::restrict`, the one genuinely map-level operation |
+| `PathMapModel/Spec.lean` | §1 proved laws (the cursor algebra); §2 checkable laws (metamorphic properties) |
+| `PathMapModel/Check.lean` | `#guard`s: regression fixtures transcribed from `src/write_zipper.rs`'s own tests, and the §2 laws over a battery of tries |
+| `PathMapModel/Fuzz.lean` | the wire format, the operation table, and the trace producer |
+| `Main.lean` | the `pathmap-oracle` binary |
+
+## What is proved versus what is checked
+
+Honest accounting, because it matters for how much the model is worth:
+
+* **Proved** (`Spec.lean` §1): the cursor algebra — `descend_to` is a monoid
+  action of paths on zippers, ascending exactly as far as you descended is the
+  identity, ascending past the root stops at the root and reports failure,
+  movement never mutates the trie, `origin_path = root_prefix_path ++ path`,
+  `child_count = |child_mask|`, and `prune_path` never removes more bytes than
+  separate the focus from its stop depth.
+* **Machine-checked on fixtures** (`Check.lean`): the metamorphic laws in
+  `Spec.lean` §2, evaluated at build time over six trie shapes crossed with
+  eight focus positions — plus regression fixtures whose expected values are
+  transcribed from `pathmap`'s own unit tests (`write_zipper_prune_path_test2`,
+  `write_zipper_drop_head_test1/3/6`) and the `restrict` oracle from
+  `tests/pathmap_algebra_differential.rs`.
+* **Checked against the crate** (`differential.py`): everything else, on every
+  generated program.
+
+The definitions themselves are the specification.  They are total and executable,
+so "the spec" and "the oracle" cannot drift apart.
+
+## The differential harness
+
+A fuzzer input is a byte string.  Lean and Rust decode it with identical rules
+into a program over two maps and two zippers — `wz` writing into map 0, `rz`
+reading map 1, kept in separate maps so the real crate can hold both at once.
+
+```
+header:
+  n  := u8 % 8                              -- entries seeded into map0
+  n × ( len := u8 % 6 ; len × pathbyte ; val := u8 )
+  n  := u8 % 8                              -- entries seeded into map1
+  n × ( len := u8 % 6 ; len × pathbyte ; val := u8 )
+  r0 := u8 % 4 ; r0 × pathbyte              -- write zipper root
+  r1 := u8 % 4 ; r1 × pathbyte              -- read  zipper root
+body:
+  repeated: op := u8 % 47 ; operands per op
+```
+
+Every path byte is masked to `b % 4`, so generated tries share prefixes heavily
+and actually branch — that is where the interesting shapes are (branch points,
+single-child runs, dangling chains).  Decoding stops when the input runs out.
+
+Each operation appends one line carrying its return value and a fingerprint of
+both zippers (relative path, origin path, existence, value, child count, value
+count); the run ends with a full dump of both maps.  Any behavioural difference
+is a textual diff.
+
+The op table lives in `Fuzz.lean` (`PathMapModel.Fuzz.step`) and
+`examples/common/harness.rs`; **the two must be changed together.**
+
+### Deliberately skipped operations
+
+A handful of argument combinations are skipped by both sides, each because the
+crate's behaviour there is a confirmed bug that would otherwise mask everything
+downstream.  Each is recorded in [FINDINGS.md](FINDINGS.md) and each skip is
+commented at its site:
+
+* `meet_k_path_into` when the focus has no children, or `k = 0` — it does not
+  terminate.
+* `insert_prefix("")` and `join_k_path_into(0)` — both should be the identity and
+  both destroy the subtrie.
+* `descend_first_k_path(0)` / `to_next_k_path(0)` — degenerate; report success
+  without moving, forever.
+* `to_next_sibling_byte` / `to_prev_sibling_byte` at the zipper root — the native
+  read zipper leaves its own root there.
+* `prune_path` / `prune_ascend`, and the `prune` flag on every other operation,
+  for a write zipper not rooted at the map root — the depth pruned is a function
+  of internal node layout, so there is nothing to specify.
+
+`to_next_k_path` is also only exercised as the continuation of a
+`descend_first_k_path` iteration (the `k_path_walk` op), because
+`k_path_internal` carries iteration state and `pathmap`'s own debug assertions
+flag calling it cold.
+
+Five return values are compared as `?` when the focus has no descendants
+(`remove_branches`, `join_map_into`, `restrict`, `restricting`, `take_map`):
+they report on whether an empty node happens to be materialised at the focus,
+which is representation state rather than trie state.  The *effects* are still
+compared in full.
+
+## Current agreement
+
+500 random programs (`./lean/differential.py --random 500 --seed 99 --max-fails 0`),
+model versus crate, comparing every return value plus both maps in full:
+
+```
+397/500 inputs agree exactly
+ 95/500 hit one of the classified defects in FINDINGS.md
+  8/500 diverge for reasons not yet classified
+```
+
+The 95 break down as: `to_next_val` after `to_next_step` (26), the `TrieRef`
+slice underflow (20), zippers escaping their root (17), `ascend_until` corrupting
+a write zipper (12), a `set_val` unwrap on `None` (10), `make_unique` on an empty
+sentinel (8), `join_into` dropping the source (2).
+
+`differential.py` prints that breakdown itself, so new divergences stay visible
+as the known ones are fixed.
+
+## The libFuzzer target
+
+`fuzz/fuzz_targets/zipper_ops.rs` runs the same decoder under libFuzzer and
+checks structural invariants in-process — no oracle, so it runs at full speed:
+
+* `at_root()` agrees with `path().is_empty()`
+* `origin_path() == root_prefix_path() ++ path()`
+* `root_prefix_path()` never changes — **a zipper may not escape its own root**
+* a value implies the path exists; children imply the path exists
+* `child_count() == |child_mask()|`
+* `val_count()` counts the focus value, and equals it exactly at a leaf
+
+```bash
+cargo +nightly fuzz run zipper_ops
+./lean/differential.py fuzz/corpus/zipper_ops/*     # deep pass over the corpus
+```
+
+Without `cargo-fuzz` installed, the same invariants can be replayed over any
+input with `cargo run --release --example pathmap_trace -- --check <file>`.
+
+## Out of scope
+
+`ZipperHead` and the concurrency story, `ProductZipper` / `PrefixZipper` /
+`OverlayZipper` / the ACT format, serialisation, `merkleize`, catamorphisms, and
+allocator behaviour.  The model covers `PathMap`, `ReadZipper` and `WriteZipper`
+over an in-memory trie.
+
+That said, the containment invariant the fuzz target checks
+(`root_prefix_path()` never changes) is exactly the property `ZipperHead` relies
+on to hand out non-overlapping zippers safely, and it is violated — see
+[FINDINGS.md](FINDINGS.md).
