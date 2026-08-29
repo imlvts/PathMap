@@ -126,8 +126,7 @@ The native `ReadZipper` overrides these with a token-based iterator that does
 terminate, so the hang is reachable through `meet_k_path_into` and through any
 zipper type that inherits the default `ZipperIteration` implementation.
 
-## 7. `prune_path` prunes above the zipper's root, and its return value is
-not a function of the trie
+## 7. `prune_path` prunes above the zipper's root, and its count is unspecifiable
 
 `case: prune_reach` — **documentation is wrong; return value is unspecifiable**
 
