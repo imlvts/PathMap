@@ -211,17 +211,20 @@ def childMaskAgrees (t : Trie V) (p : Path) : Bool :=
 /-- `val_count` at the root counts exactly the entries of `iter`. -/
 def valCountAgrees (t : Trie V) : Bool := t.valCount [] == t.vals.length
 
-/-- `set_val` then `val` observes the value that was set, and the location exists. -/
-def setValThenVal (ops : ValOps V) (z : Zip V) (v : V) : Bool :=
-  let z' := (z.setVal v).2
-  (match z'.val with | some w => ops.beq w v | none => false) && z'.pathExists
+/-- After `set_val` the focus is a location carrying exactly that value.
 
-/-- `remove_val` clears the value but leaves the location dangling. -/
+One `Contents` case, rather than "the value is `v`" and "the path exists"
+checked separately — the second was only there because the first could not say
+it. -/
+def setValThenVal (ops : ValOps V) (z : Zip V) (v : V) : Bool :=
+  match ((z.setVal v).2).contents with
+  | .valued w => ops.beq w v
+  | .bare | .absent => false
+
+/-- `remove_val` clears the value but leaves the location dangling — which is
+to say the focus ends up exactly `.bare`. -/
 def removeValLeavesPath (z : Zip V) : Bool :=
-  if z.pathExists then
-    let z' := (z.removeVal false).2
-    z'.val.isNone && z'.pathExists
-  else true
+  if z.pathExists then ((z.removeVal false).2).contents matches .bare else true
 
 /-- `create_path` makes the focus exist; a second call reports "already there". -/
 def createPathIdempotent (z : Zip V) : Bool :=

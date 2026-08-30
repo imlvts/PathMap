@@ -299,9 +299,11 @@ def joinMapInto (m : Trie V) : AlgStatus × Zip V :=
   if srcB.isEmptyMap then
     -- Short-circuit, and note the asymmetry with `join_into`: this branch tests
     -- `self.get_focus().is_none()` (does a node exist at all?), not
-    -- `node_is_empty()`.  A dangling focus therefore reports `Identity`, where
-    -- `join_into` would report `None`.
-    (if z1.pathExists then .identity else .none, z1)
+    -- `node_is_empty()`.  So a *bare* focus reports `Identity` here, where
+    -- `join_into` on the same state reports `None`.
+    (match z1.contents with
+     | .bare | .valued _ => AlgStatus.identity
+     | .absent => AlgStatus.none, z1)
   else
     let selfB := z1.focusNode
     let r := Trie.join ops selfB srcB

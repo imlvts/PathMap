@@ -35,8 +35,15 @@ def zipperAt (t : Trie V) (p : Path) : Zip V := { trie := t, root := p, path := 
 /-- `PathMap::get_val_at` / `get`. -/
 def getValAt (t : Trie V) (p : Path) : Option V := t.valAt p
 
-/-- `PathMap::contains`. -/
-def contains (t : Trie V) (p : Path) : Bool := (t.valAt p).isSome
+/-- `PathMap::contains`: whether there is a **value** at `p`.
+
+Not the same question as `path_exists_at`, and the gap between them is the bare
+case: a path created by `create_path`, or left behind by `remove_val(false)`,
+exists but is not contained. -/
+def contains (t : Trie V) (p : Path) : Bool :=
+  match t.contentsAt p with
+  | .valued _ => true
+  | .bare | .absent => false
 
 /-- `PathMap::path_exists_at`. -/
 def pathExistsAt (t : Trie V) (p : Path) : Bool := t.pathExists p
