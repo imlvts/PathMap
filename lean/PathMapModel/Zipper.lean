@@ -80,6 +80,12 @@ def subPaths : List Path := (z.trie.subtrie z.root).paths
 
 /-! ## `trait Zipper` -/
 
+/-- What the trie holds at the focus: the whole answer to `path_exists` and
+`val` at once.  Definitions that must handle a location existing *without* a
+value are written against this, so the `match` will not compile until they say
+what happens to it. -/
+def contents : Trie.Contents V := z.trie.contentsAt z.focus
+
 /-- `Zipper::path_exists`. -/
 def pathExists : Bool := z.trie.pathExists z.focus
 

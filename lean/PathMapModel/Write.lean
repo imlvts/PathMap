@@ -107,9 +107,13 @@ Pruning only happens when a value was actually removed: `remove_val` returns
 early on the `None` branch, so `remove_val(true)` at a location with no value
 leaves any dangling path in place. -/
 def removeVal (prune : Bool) : Option V × Zip V :=
-  let (old, t) := z.trie.removeVal z.focus
-  let z' := z.withTrie t
-  (old, if prune && old.isSome then (z'.prunePath).2 else z')
+  match z.contents with
+  -- Nothing to remove.  Note the `prune` flag does not fire here: `remove_val`
+  -- returns early on this branch, so a dangling path is left in place.
+  | .absent | .bare => (none, z)
+  | .valued v =>
+    let z' := z.withTrie (z.trie.removeVal z.focus).2
+    (some v, if prune then (z'.prunePath).2 else z')
 
 /-- `ZipperWriting::create_path`: make the focus exist as a dangling path.
 Returns whether new bytes were created.
@@ -119,7 +123,12 @@ when there is no key left to create, which is the map root, not the zipper root.
 A zipper rooted at `ab` whose root does not yet exist will happily create it. -/
 def createPath : Bool × Zip V :=
   if z.focus.isEmpty then (false, z)
-  else (!z.pathExists, z.withTrie (z.trie.addPath z.focus))
+  else
+    match z.contents with
+    | .absent => (true, z.withTrie (z.trie.addPath z.focus))
+    -- Already there, with or without a value: nothing to create, and in
+    -- particular an existing value is never disturbed.
+    | .bare | .valued _ => (false, z)
 
 /-! ## Removing subtries -/
 
@@ -199,8 +208,8 @@ def graftChildMaps (maps : List (ByteMask × Trie V)) (removeUnset : Bool) : Zip
 /-- `ZipperWriting::take_map`: remove the subtrie at the focus (value included)
 and return it as a `PathMap`.  Returns `none` when there was nothing to take. -/
 def takeMap (prune : Bool) : Option (Trie V) × Zip V :=
-  let (rv, t1) := z.trie.removeVal z.focus
-  let z1 := z.withTrie t1
+  let rv := z.contents.val
+  let z1 := z.withTrie (z.trie.removeVal z.focus).2
   let z2 := if prune then (z1.prunePath).2 else z1
   let below := z2.focusNode
   let z3 := z2.withTrie (z2.trie.removeBelow z2.focus)

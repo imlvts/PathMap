@@ -72,6 +72,25 @@ The list is canonical — sorted by path, no duplicates, prefix-closed, containi
 `[]` — so **structural equality of `Trie`s is observational equality**, which is
 exactly what is needed to decide `AlgebraicStatus::Identity` versus `Element`.
 
+A location is therefore in one of three states, and asking about it returns all
+three at once rather than splitting the question across two accessors:
+
+```lean
+inductive Contents (V : Type) | absent | bare | valued : V → Contents V
+
+def contentsAt   : Trie V → Path → Contents V
+def valAt      t p := (t.contentsAt p).val       -- derived
+def pathExists t p := (t.contentsAt p).present   -- derived
+```
+
+The middle case is where this API keeps going wrong — `create_path` produces it,
+`remove_val(false)` leaves it behind, and findings 7, 8 and 15 are all
+operations that mishandle it.  A definition written against `Contents` cannot
+quietly forget it: the `match` will not compile until it says what happens.  And
+`valued` entails existence by construction, so "a value at a path that is not
+there" is unrepresentable rather than merely false
+(`Trie.Contents.present_of_val`).
+
 A zipper is that trie plus two paths:
 
 ```lean

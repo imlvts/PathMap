@@ -55,10 +55,6 @@ The two halves the API observes, derived rather than stored. -/
 /-- Every existing location, in depth-first order. -/
 def paths (t : Trie V) : List Path := t.entries.map (·.1)
 
-/-- Every location that carries a value, with it, in depth-first order. -/
-def vals (t : Trie V) : List (Path × V) :=
-  t.entries.filterMap fun e => e.2.map (fun v => (e.1, v))
-
 /-! ## Canonicalisation -/
 
 /-- Deduplicate an association list, keeping the *first* binding for each key.
@@ -96,15 +92,77 @@ instance : Inhabited (Trie V) := ⟨empty⟩
 
 /-! ## Observations
 
-These four functions are the *entire* observable interface of a trie.  Every
+These functions are the *entire* observable interface of a trie.  Every
 specification in `Spec.lean` is phrased in terms of them. -/
 
+/-- What a trie holds at a path — the whole answer, in one value.
+
+A location is in one of exactly three states, and they are worth naming because
+the middle one is where this API keeps going wrong: `create_path` produces it,
+`remove_val(false)` leaves it behind, and findings 7, 8 and 15 in FINDINGS.md are
+all about operations that mishandle it.
+
+Asking through `Contents` rather than through `pathExists` and `valAt`
+separately means a definition cannot quietly forget that case: the `match` will
+not compile until it says what happens.  `valued` implies the location exists,
+so the impossible combination — a value at a path that is not there — is
+unrepresentable rather than merely untrue.
+
+Storage stays `Option V` (an entry that is present may or may not carry a
+value); `Contents` is the *observation*, and adds the case of not being there at
+all. -/
+inductive Contents (V : Type) where
+  /-- The path is not in the trie. -/
+  | absent
+  /-- The path is in the trie but carries no value — a location `path_exists`
+  reports `true` for and `val` reports `none` for. -/
+  | bare
+  /-- The path is in the trie and carries this value. -/
+  | valued : V → Contents V
+deriving Repr
+
+namespace Contents
+variable {V : Type}
+
+/-- The value, if any — what `ZipperValues::val` reports. -/
+def val : Contents V → Option V
+  | valued v => some v
+  | _ => none
+
+/-- Whether the location is in the trie — what `Zipper::path_exists` reports. -/
+def present : Contents V → Bool
+  | absent => false
+  | _ => true
+
+/-- Holding a value entails being there.  The impossible combination is not
+merely false, it is unrepresentable: there is no constructor for it. -/
+theorem present_of_val {c : Contents V} {v : V} (h : c.val = some v) :
+    c.present = true := by
+  cases c <;> simp [val, present] at h ⊢
+
+end Contents
+
+/-- What the trie holds at `p`. -/
+def contentsAt (t : Trie V) (p : Path) : Contents V :=
+  match t.entries.lookup p with
+  | none => .absent
+  | some none => .bare
+  | some (some v) => .valued v
+
+/-- Every location that carries a value, with it, in depth-first order.
+
+Read off the existing locations rather than off `entries` directly, so that a
+pair can only appear here if the trie genuinely holds a value there — see
+`Spec.mem_vals_pathExists`. -/
+def vals (t : Trie V) : List (Path × V) :=
+  t.paths.filterMap fun p => (t.contentsAt p).val.map (fun v => (p, v))
+
 /-- `Zipper::val` / `PathMap::get_val_at`: the value at `p`, if any. -/
-def valAt (t : Trie V) (p : Path) : Option V := (t.entries.lookup p).join
+def valAt (t : Trie V) (p : Path) : Option V := (t.contentsAt p).val
 
 /-- `Zipper::path_exists`: whether `p` is a location in the trie.  True for
 dangling paths (locations with no value and no children). -/
-def pathExists (t : Trie V) (p : Path) : Bool := t.paths.contains p
+def pathExists (t : Trie V) (p : Path) : Bool := (t.contentsAt p).present
 
 /-- `Zipper::child_mask`: the bytes `b` for which `p ++ [b]` exists. -/
 def childMask (t : Trie V) (p : Path) : ByteMask :=
@@ -185,7 +243,9 @@ has no value, and has no children. -/
 
 /-- Is `p` a dangling tip — an existing location with neither value nor children? -/
 def isDanglingTip (t : Trie V) (p : Path) : Bool :=
-  t.pathExists p && (t.valAt p).isNone && t.belowIsEmpty p
+  match t.contentsAt p with
+  | .bare => t.belowIsEmpty p
+  | .absent | .valued _ => false
 
 /-- The number of bytes `prune_path` would remove at focus `p` for a zipper whose
 root sits at depth `rootLen`.  `0` means "nothing to prune". -/
