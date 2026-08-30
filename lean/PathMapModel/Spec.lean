@@ -159,12 +159,12 @@ the constructors had to be trusted to keep the two in step.  With one list of
 theorem mem_vals_pathExists {V : Type} (t : Trie V) (kv : Path × V)
     (h : kv ∈ t.vals) : t.pathExists kv.1 = true := by
   simp only [vals, List.mem_filterMap] at h
-  obtain ⟨e, he, hmap⟩ := h
-  simp only [pathExists, paths, List.contains_iff_mem, List.mem_map]
-  refine ⟨e, he, ?_⟩
-  cases he2 : e.2 with
-  | none => simp [he2] at hmap
-  | some v => simp [he2] at hmap; simp [← hmap]
+  obtain ⟨p, _, hmap⟩ := h
+  cases hc : (t.contentsAt p).val with
+  | none => simp [hc] at hmap
+  | some v =>
+    simp [hc] at hmap
+    simpa [pathExists, ← hmap] using Contents.present_of_val hc
 
 /-- Pruning can never remove more bytes than separate the focus from the
 zipper's root: `prune_path` cannot prune above the root. -/
