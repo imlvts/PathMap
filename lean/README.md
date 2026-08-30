@@ -51,19 +51,26 @@ make, before a single fuzz input had been generated.
 
 Everything rests on one observation.  A `pathmap` trie is **not** just a
 path→value map: `create_path` makes a location that exists without carrying a
-value, and `remove_val(false)` leaves one behind.  So the observable state is two
-finite objects:
+value, and `remove_val(false)` leaves one behind.  So a location and a value at
+that location are separate facts, and the state records both:
 
 ```lean
 structure Trie (V : Type) where
-  vals  : List (Path × V)   -- the finite path -> value map
-  paths : List Path         -- the prefix-closed set of locations that exist
+  entries : List (Path × Option V)   -- every location that exists, with its
+                                     -- value if it has one
 ```
 
-Both are kept in canonical form (sorted, deduplicated, `paths` prefix-closed and
-containing every key of `vals`), so **structural equality of `Trie`s is
-observational equality** — which is exactly what is needed to decide
-`AlgebraicStatus::Identity` versus `Element`.
+One list rather than a path→value map beside a set of existing paths.  The two
+halves the API actually observes — `paths` and `vals` — are *derived* from it,
+which makes the awkward invariant "every valued path also exists" structural
+rather than something every constructor has to maintain: a value cannot be
+recorded at a location that is not in the list.  A `none` entry is exactly a
+dangling path.  (`Trie.mem_vals_pathExists` states this as a theorem; it used to
+be a runtime check, because in the two-list form it could fail.)
+
+The list is canonical — sorted by path, no duplicates, prefix-closed, containing
+`[]` — so **structural equality of `Trie`s is observational equality**, which is
+exactly what is needed to decide `AlgebraicStatus::Identity` versus `Element`.
 
 A zipper is that trie plus two paths:
 
