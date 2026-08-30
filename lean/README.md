@@ -236,9 +236,53 @@ scheme also never deleted its temp directories; 98M of `/tmp/pathmap-diff-*` had
 accumulated.  Only failing inputs are written out now, and the path is printed
 so `shrink.py` can still take them.
 
+Both children are handed an input before either is read, so they work at the
+same time; driving them one after the other cost about a fifth of the
+throughput.  `-j N` shards across N worker processes, each owning its own pair
+of children — processes rather than threads because comparing two lists of trace
+lines is enough Python work to make the GIL the ceiling past a few workers.
+
+Where an input *comes from* is behind `InputSource`, and each worker asks for
+its own through `get_next_input(idx)`.  `get` must be deterministic in `idx` and
+carry no state between calls, which is what makes a `-j32` run test exactly what
+a `-j1` run does and lets the parent re-derive a failing input from its index
+without workers shipping bytes back.  `RandomInputs` seeds per index rather than
+once per run, so generation parallelises; a queue-backed source (a corpus being
+minimised, a coverage-guided generator) drops in without touching the driver.
+
+That mattered more than it sounds.  The parent used to build every random input
+up front, single-threaded, a byte at a time — `bytes(rng.randrange(256) for _ in
+range(n))` — which was 0.63s per 20000 inputs, half the wall clock of a `-j32`
+pass, and it capped scaling at `-j32`.  `randbytes` alone is ~39x faster than
+that loop, and moving it into the workers removes it from the critical path:
+
+    inputs/s, 100000 random programs
+
+              -j1      -j8     -j32     -j64
+    model    1746    12376    37037    44444
+    crate       -        -    36232    45249
+
+Crate mode used to be the slow one — 897/s at `-j32`, because two hangs per 2000
+inputs each stalled for the whole timeout and no amount of parallelism goes
+below that floor.  Fixing the read zipper's at-root guard (see FINDINGS) removed
+the hangs, and with them that floor.
+
+Note that changing the generator changed *which* programs a seed produces, so
+runs recorded against an older seed do not reproduce byte for byte.
+
+`--timeout` bounds one input, and defaults to 2s.  It used to be 30s, which was
+about 25000x too generous: measured over 2000 random programs against the real
+crate, the inputs that do *not* hang run in p50 0.19ms and p100 1.21ms.  Since
+two of those 2000 do hang, that one constant was most of the wall clock — crate
+mode went from 32 to 364 inputs/s at `-j1` on the strength of it, and 897/s at
+`-j8`, where the remaining floor is just the timeout itself.
+
 The Rust front ends run each input on a thread they can abandon, so a hang costs
-one input rather than the process — both crate hangs in a 400-input pass are
-absorbed without a respawn.  The oracle cannot: `IO.asTask` with `IO.waitAny`
+one input rather than the process.  The driver then respawns that child anyway:
+an abandoned thread cannot be killed and goes on spinning at 100% of a core for
+the rest of the run, which showed up as `user` time exceeding `wall` on an
+otherwise sequential workload.  A respawn costs ~3ms and gets the core back.
+The oracle cannot cut its own work off at all: `IO.asTask` with `IO.waitAny`
 blocks on the work task and never sees the timer, and polling `IO.hasFinished`
 blocks on the first call (measured: a 50ms budget returned "finished" after
 99.5s).  So the driver enforces that deadline from outside, killing and

@@ -85,7 +85,11 @@ fn serve(flag: bool, runner: fn(&[u8], bool) -> Vec<String>) {
     }));
 
     let stdin = std::io::stdin();
-    let mut out = std::io::stdout();
+    // `std::io::Stdout` is a `LineWriter`, which means one `write` syscall per
+    // trace line -- about 260 per input, and it showed up as ~50 writes/input
+    // per child in a syscall profile of the driver.  A `BufWriter` flushed once
+    // per command turns that into one or two.
+    let mut out = std::io::BufWriter::with_capacity(1 << 16, std::io::stdout().lock());
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
         let line = line.trim_end();
