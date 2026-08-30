@@ -424,6 +424,13 @@ meaning, and the crate says so itself about the two methods that expose it:
 must never rely on the return value for correctness".  Specifying them would
 mean specifying non-determinism, so `ZipperConcrete` is out of the harness.
 
+Nothing is refused: a write whose focus lies inside a shared subtrie goes
+through, and the sharing is dissolved as it happens.  `make_unique` compares the
+refcount and clones when it is not 1, so the node stops being shared at the
+moment of the write — `is_shared` at the written location goes `true` → `false`
+while the other reference keeps the original node.  Copy-on-write, not a
+restriction.
+
 Not modelling sharing is what makes sharing bugs *detectable* rather than what
 hides them: the model says two grafted copies are independent, so a mutation
 leaking from one to the other is a divergence.  Where representation does leak
