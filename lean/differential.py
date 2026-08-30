@@ -69,6 +69,9 @@ KNOWN = [
     (["to_next_val"],
      "to_next_val() misses downstream values after a token-maintaining move "
      "[to_next_val_after_step]"),
+    (["sibling_byte"],
+     "sibling movement fails after a token-maintaining move "
+     "[sibling_after_iteration]"),
     (["to_next_get_val"],
      "to_next_get_val() inherits the to_next_val() iteration defect "
      "[to_next_val_after_step]"),
@@ -101,6 +104,27 @@ KNOWN = [
      "[remove_unmasked_dangling]"),
     (["src/trie_ref.rs", "out of range"],
      "TrieRef slice range underflows to a huge usize"),
+    (["src/dense_byte_node.rs", "index out of bounds"],
+     "graft_child_maps() reaches node_get_child_mut with an empty key whenever "
+     "the destination focus is a dense node [graft_child_maps_dense]"),
+    # graft_child_maps is quarantined by op name: it is broken in two documented
+    # ways (finding 15), and its surviving non-panicking behaviour on line-list
+    # nodes diverges constantly.  Anything new in this op hides behind this
+    # entry, so re-check it once the method is fixed.
+    (["graft_child_maps"],
+     "graft_child_maps() misbehaves (finding 15) [graft_child_maps_dense]"),
+    (["join_map_into"],
+     "AlgebraicStatus::Identity is not returned reliably when nothing changed "
+     "(finding 8); reproducer in lean/corpus/"),
+    (["restrict"],
+     "AlgebraicStatus::Identity is not returned reliably when nothing changed "
+     "(finding 8); reproducer in lean/corpus/"),
+    (["graft_masked_branches"],
+     "graft_masked_branches() creates the focus when grafting absent branches "
+     "(finding 15) [graft_child_maps_dense]"),
+    (["ambiguous path violation"],
+     "graft() builds a node with both a child and a value on the same key when "
+     "the destination node holds a single line [graft_ambiguous_node]"),
     (["src/trie_node.rs", "make_unique"],
      "make_unique on an empty sentinel node"),
     # ArenaCompactTree read source (differential.py --act).

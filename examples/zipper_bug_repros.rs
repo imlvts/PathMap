@@ -30,17 +30,11 @@ fn mark(v: Option<&u64>) -> String {
     match v { Some(x) => format!("={x}"), None => String::new() }
 }
 
-/// `{[] -> 0, [0,0,0,0] -> 7}` with dangling interior locations.
-fn chain_map() -> PathMap<u64> {
-    let mut m = PathMap::<u64>::new();
-    { let mut w = m.write_zipper(); w.set_val(0); }
-    m.insert(&[0u8, 0, 0, 0], 7);
-    m
-}
 
 const CASES: &[(&str, &str)] = &[
     ("join_into_empty_dst", "join_into silently drops the source when the destination map is empty"),
     ("to_next_val_after_step", "to_next_val misses every downstream value after descend_first_byte / to_next_step / descend_first_k_path"),
+    ("sibling_after_iteration", "to_next_sibling_byte fails after the focus was reached by to_next_val"),
     ("root_escape", "a read zipper whose root does not exist walks out of its own root"),
     ("insert_prefix_empty", "insert_prefix(b\"\") destroys the subtrie instead of doing nothing"),
     ("drop_head_zero", "join_k_path_into(0) destroys the subtrie instead of doing nothing"),
@@ -50,6 +44,8 @@ const CASES: &[(&str, &str)] = &[
     ("to_next_k_path_borrowed", "to_next_k_path underflows path_len on a borrowed-path zipper"),
     ("prev_sibling_missing", "to_prev_sibling_byte asserts path_exists on a non-existent focus"),
     ("remove_unmasked_dangling", "remove_unmasked_branches asserts inside a dangling line node"),
+    ("graft_ambiguous_node", "graft corrupts the destination node when it holds a single line (PANICS)"),
+    ("graft_child_maps_dense", "graft_child_maps panics whenever the destination focus is a dense node"),
     ("meet_k_path_hang", "meet_k_path_into loops forever when the focus has no children (HANGS)"),
 ];
 
@@ -139,6 +135,33 @@ fn run(name: &str) {
             println!("  note descend_first_byte() is documented as having \"identical behavior\"");
             println!("  to descend_indexed_byte(0), yet only the former breaks the iteration.");
             println!("  to_next_get_val() fails identically, since it delegates to to_next_val().");
+        }
+
+        // The same stale iteration state as the previous case, with a different
+        // victim: here it is `to_next_sibling_byte` that fails, on a sibling that
+        // plainly exists.  So the defect is not "to_next_val gives up" -- it is
+        // that a token-maintaining move leaves the zipper navigating wrongly.
+        "sibling_after_iteration" => {
+            let mut m = PathMap::<u64>::new();
+            { let mut w = m.write_zipper(); w.set_val(0); }
+            m.insert(&[0u8, 0], 0);
+            m.insert(&[1u8], 0);
+            println!("  trie: {}   (root children are 0 and 1)", paths(&m));
+
+            let mut a = m.read_zipper();
+            a.to_next_val();          // -> [0,0]
+            a.to_next_val();          // -> [1]
+            let ap = a.to_prev_sibling_byte();
+            let an = a.to_next_sibling_byte();
+            println!("  reached [1] by to_next_val:   prev -> {ap:?}, then next -> {an:?} at {:?}{}",
+                     a.path(), if an.is_none() { "   <-- BROKEN" } else { "" });
+
+            let mut b = m.read_zipper();
+            b.descend_to(&[1u8]);
+            let bp = b.to_prev_sibling_byte();
+            let bn = b.to_next_sibling_byte();
+            println!("  reached [1] by descend_to:    prev -> {bp:?}, then next -> {bn:?} at {:?}",
+                     b.path());
         }
 
         // `path()` and `at_root()` still say "at my root" while `origin_path()`
@@ -257,6 +280,109 @@ fn run(name: &str) {
             println!("  focus exists={} child_count={}", wz.path_exists(), wz.child_count());
             wz.remove_unmasked_branches(ByteMask::EMPTY, false);
             println!("  remove_unmasked_branches(EMPTY) returned");
+        }
+
+        // `graft` over a destination whose node holds exactly one line produces a
+        // node with both a child at key "\0" and a value at key "\0\0" -- an
+        // ambiguous path -- and the node validator aborts.  Grafting a subtrie
+        // over an *identical* one is enough to trigger it.
+        "graft_ambiguous_node" => {
+            std::panic::set_hook(Box::new(|_| {}));
+            let go = |dstk: &[&[u8]], srck: &[&[u8]], at: &[u8]| {
+                let mut dst = PathMap::<u64>::new();
+                for k in dstk { dst.insert(k, 1); }
+                let mut src = PathMap::<u64>::new();
+                for k in srck { src.insert(k, 8); }
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let mut d = dst.clone();
+                    {
+                        let mut wz = d.write_zipper_at_path(at);
+                        let mut rz = src.read_zipper();
+                        rz.descend_to(at);
+                        wz.graft(&rz);
+                    }
+                    d.iter().map(|(k, v)| (k, *v)).collect::<Vec<(Vec<u8>, u64)>>()
+                }))
+                .map_err(|_| "PANIC")
+            };
+            println!("  grafting src's subtrie at `at` over dst's subtrie at the same `at`:");
+            for (label, dstk, srck, at) in [
+                ("dst={[0,0]} src={[0,3]}   at=[0]", &[&[0u8, 0][..]][..], &[&[0u8, 3][..]][..], &[0u8][..]),
+                ("dst={[0,0]} src={[0,0]}   at=[0]", &[&[0u8, 0][..]][..], &[&[0u8, 0][..]][..], &[0u8][..]),
+                ("dst={[1,1]} src={[1,3]}   at=[1]", &[&[1u8, 1][..]][..], &[&[1u8, 3][..]][..], &[1u8][..]),
+                ("dst={[0]}   src={[0,3]}   at=[0]", &[&[0u8][..]][..], &[&[0u8, 3][..]][..], &[0u8][..]),
+                ("dst={[0,0],[9]} src={[0,3]} at=[0]", &[&[0u8, 0][..], &[9u8][..]][..], &[&[0u8, 3][..]][..], &[0u8][..]),
+            ] {
+                println!("    {label:36} -> {:?}", go(dstk, srck, at));
+            }
+            println!("  the second line is a graft of a subtrie over an identical one.");
+            println!("  a destination with any second branch takes a different node type and survives;");
+            println!("  so does calling remove_branches(false) before the graft.");
+            let _ = std::panic::take_hook();
+        }
+
+        // `graft_child_maps` reaches `node_get_child_mut` with an empty key.
+        // That method guards with `debug_assert!(key.len() > 0)` and then indexes
+        // `key[0]`, so debug builds trip the assertion and release builds panic
+        // on the bounds check.  It fires as soon as the destination's focus node
+        // is a `DenseByteNode`, which is any trie with a handful of branches --
+        // so the method is unusable on realistic data.
+        "graft_child_maps_dense" => {
+            std::panic::set_hook(Box::new(|_| {}));
+            println!("  destination is a fresh map with N single-byte branches at the root;");
+            println!("  grafting one child map over byte 0, remove_unset = false:");
+            for n in [1usize, 2, 3, 4, 8] {
+                for (rv, br) in [(true, false), (false, true)] {
+                    let mut dst = PathMap::<u64>::new();
+                    for i in 0..n { dst.insert(&[i as u8, 0], 1); }
+                    let mut child = PathMap::<u64>::new();
+                    if rv { let mut w = child.write_zipper(); w.set_val(7); }
+                    if br { child.insert(&[3u8], 8); }
+
+                    let masked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let mut d2 = dst.clone();
+                        let mut src = PathMap::<u64>::new();
+                        { let mut w = src.write_zipper_at_path(&[0u8]); w.graft_map(child.clone()); }
+                        let mut wz = d2.write_zipper();
+                        wz.graft_masked_branches(&src.read_zipper(), ByteMask::from_iter([0u8]), false);
+                    }));
+                    let childmaps = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        let mut wz = dst.write_zipper();
+                        wz.graft_child_maps(ByteMask::from_iter([0u8]), vec![child], false);
+                    }));
+                    println!("    root branches={n}  child_root_val={rv:<5} child_branch={br:<5} \
+graft_masked_branches={:<5} graft_child_maps={}",
+                             if masked.is_ok() { "ok" } else { "PANIC" },
+                             if childmaps.is_ok() { "ok" } else { "PANIC" });
+                }
+            }
+            let _ = std::panic::take_hook();
+            println!("  (a DenseByteNode is used from ~3 branches up)");
+
+            // Second symptom: grafting *empty* maps.  Grafting nothing must
+            // neither create nor destroy a location.  A debug build trips
+            // `assertion failed: !src.as_tagged().node_is_empty()`; a release
+            // build silently creates the focus as a dangling path.
+            println!("\n  empty map, focus descended to the non-existent [0,0],");
+            println!("  then graft_child_maps of three EMPTY maps:");
+            std::panic::set_hook(Box::new(|_| {}));
+            let r = std::panic::catch_unwind(|| {
+                let mut m = PathMap::<u64>::new();
+                {
+                    let mut wz = m.write_zipper();
+                    wz.descend_to(&[0u8, 0]);
+                    assert!(!wz.path_exists());
+                    let maps: Vec<PathMap<u64>> = (0..3).map(|_| PathMap::<u64>::new()).collect();
+                    wz.graft_child_maps(ByteMask::from_iter([0u8, 1, 3]), maps, true);
+                    wz.path_exists()
+                }
+            });
+            let _ = std::panic::take_hook();
+            match r {
+                Ok(exists) => println!("    focus exists afterwards = {exists}   <-- expected false"),
+                Err(_) => println!("    PANIC (debug assertion !src.node_is_empty()); \
+a release build instead creates the path"),
+            }
         }
 
         // Does not terminate: `descend_first_k_path`'s default loop cannot make

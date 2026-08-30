@@ -42,7 +42,7 @@ same `join_into` into a *non-empty* destination produces the right answer.  Only
 the empty-destination case loses the data, and it reports `Identity` — "self was
 not modified" — rather than failing.
 
-## 2. `to_next_val` gives up after a token-maintaining move
+## 2. A token-maintaining move leaves the zipper navigating wrongly
 
 `case: to_next_val_after_step` -- **silent wrong answer**
 
@@ -82,6 +82,20 @@ Two consequences worth separating out:
 * `to_next_get_val()` fails identically, since it delegates to `to_next_val()`.
   So does any loop built on `descend_first_byte` + `to_next_val`, which is the
   natural way to write a depth-first walk.
+
+**`to_next_val` is not the only victim** (`case: sibling_after_iteration`).  On
+`{[] = 0, [0,0] = 0, [1] = 0}`, reach `[1]` by two `to_next_val` calls, step to
+the previous sibling, and step back:
+
+```rust
+z.to_next_val(); z.to_next_val();     // at [1]
+z.to_prev_sibling_byte();             // -> Some(0), at [0]
+z.to_next_sibling_byte();             // -> None, though [1] plainly exists
+```
+
+Reaching `[1]` with `descend_to` instead makes the same round trip succeed.  So
+the defect is better stated as *a token-maintaining move leaves the zipper
+navigating wrongly*, rather than as anything specific to `to_next_val`.
 
 ## 3. A read zipper can escape its own root
 
@@ -244,6 +258,25 @@ a value-only leaf, for instance.
 
 The effects agree in every case observed; only the reported status differs.
 
+**The same imprecision reaches `AlgebraicStatus::Identity` itself.**  `Identity`
+is documented as "a result indicating `self` was unmodified by the operation",
+but `join_map_into` and `restrict` both return `Element` on inputs where the
+destination trie is provably unchanged -- the whole-map dumps before and after
+are byte-identical.  The status is decided by whether the node algebra's
+`pjoin_dyn` / `prestrict_dyn` *detects* identity, which depends on how the nodes
+were built rather than on what they contain; building the same trie by `insert`
+and by `graft` can give different answers.  A caller cannot use `Identity` to
+skip downstream work.
+
+These two do not reduce to a short snippet -- the trigger is a particular node
+representation, and the obvious hand-written constructions all report `Identity`
+correctly.  The reproducers are therefore fuzz inputs, kept in `lean/corpus/`:
+
+```bash
+./lean/differential.py lean/corpus/status-imprecise-join_map_into.bin
+./lean/differential.py lean/corpus/status-imprecise-restrict.bin
+```
+
 ## 9. `ascend_until` corrupts a write zipper rooted at a node boundary
 
 `case: ascend_until_wz` — **debug: panic; release: silently wrong reads**
@@ -403,6 +436,71 @@ separately, so I am not claiming it is the same defect.
   halves of that rule (the union of locations, and which value survives a
   collision) over 300 random prefix-sharing tries, including dangling paths and
   root values: **300 of 300 match**.
+
+## 14. `graft` builds an invalid node when the destination holds a single line
+
+`case: graft_ambiguous_node` -- **abort; the destination trie is corrupt**
+
+```rust
+let mut dst = PathMap::<u64>::new();  dst.insert(&[0, 0], 1);
+let mut src = PathMap::<u64>::new();  src.insert(&[0, 3], 8);
+
+let mut wz = dst.write_zipper_at_path(&[0]);
+let mut rz = src.read_zipper();  rz.descend_to(&[0]);
+wz.graft(&rz);
+// Invalid node - ambiguous path violation. LineListNode (
+//   slot0: occupied=true is_child=true  key="\0"
+//   slot1: occupied=true is_child=false key="\0\0")
+```
+
+The graft leaves the node holding both a *child* at key `\0` and a *value* at
+key `\0\0` -- two slots describing the same path -- and the node validator
+aborts.  Grafting a subtrie over an **identical** one (`src = {[0,0]}`) is
+enough to trigger it, which makes this hard to dismiss as an edge case;
+`graft` is, per the source comments, "probably the most called zipper method".
+
+It needs the destination node to hold exactly one line: giving `dst` any second
+branch (`{[0,0], [9]}`) changes the node type and the graft succeeds, and so
+does calling `remove_branches(false)` immediately before. Reached equally through
+`graft_src_at` and through `graft_masked_branches`, which is how the fuzzer found
+it.
+
+## 15. `graft_child_maps` is unusable on a dense node, and creates paths from nothing
+
+`case: graft_child_maps_dense` -- **abort, or a silently created path**
+
+Two symptoms, one method.
+
+**On any dense destination it aborts.**
+
+```rust
+let mut dst = PathMap::<u64>::new();
+for i in 0..3 { dst.insert(&[i, 0], 1); }        // three branches -> DenseByteNode
+dst.write_zipper().graft_child_maps(ByteMask::from_iter([0]), vec![child], false);
+// debug:   assertion failed: key.len() > 0        (dense_byte_node.rs)
+// release: index out of bounds: the len is 0 but the index is 0
+```
+
+`node_get_child_mut` guards with `debug_assert!(key.len() > 0)` and then indexes
+`key[0]`, so the debug assertion and the release bounds check catch the same
+empty-key call. A `DenseByteNode` appears from about three branches up, so this
+fires on any realistic trie -- one, two and three branches give ok, ok, abort.
+`graft_masked_branches`, which the trait documents as the equivalent operation
+from a zipper source, is unaffected.
+
+**Grafting empty maps creates the focus.**  `graft_masked_branches` shares this
+symptom when every set bit names a branch the source does not have.
+
+```rust
+let mut wz = PathMap::<u64>::new().write_zipper();
+wz.descend_to(&[0, 0]);                          // does not exist
+wz.graft_child_maps(mask, vec![PathMap::new(); 3], true);
+// debug:   assertion failed: !src.as_tagged().node_is_empty()
+// release: path_exists() is now true -- a dangling path made out of nothing
+```
+
+Grafting nothing should neither create nor destroy a location, which is the rule
+`graft` itself follows.
 
 ## 13. Further arithmetic underflows reached from safe API
 
