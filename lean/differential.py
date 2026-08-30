@@ -1,21 +1,35 @@
 #!/usr/bin/env python3
-"""Differential runner: Lean model vs. the real `pathmap` crate.
+"""Differential runner: two implementations of the same specification.
 
-For each input file, runs
-
-    lean/.lake/build/bin/pathmap-oracle <file>     (the model)
-    target/*/examples/pathmap_trace <file>         (the crate)
-
-and diffs the traces.  Both decode the same bytes with the same rules; see
+For each input file, runs the Lean oracle and one other front end, and diffs the
+traces.  All of them decode the same bytes with the same rules; see
 `lean/PathMapModel/Fuzz.lean` for the wire format.
+
+    lean/.lake/build/bin/pathmap-oracle     the Lean model  (always)
+    target/*/examples/pathmap_trace        the real crate  (default)
+    target/*/examples/reference            the Rust model  (--model)
+    target/*/examples/act_trace            ACT read source (--act)
+
+Each child is spawned once with `--server` and stays resident, taking inputs as
+`run-input <timeout-ms> <hex>` on stdin; see `examples/common/server.rs` for the
+protocol.  That replaced a temp file and two fresh processes per input, which
+cost about 5x the runtime and left `/tmp/pathmap-diff-*` behind forever.  Only a
+*failing* input is written to disk now, so it can still be replayed and shrunk.
 
     ./lean/differential.py corpus/*                # check a corpus
     ./lean/differential.py --random 500            # generate and check
+    ./lean/differential.py --model --random 500    # check the Rust port
+
+`--model` is the acceptance test for `examples/reference/`: it compares two
+independent transcriptions of the same specification, in different languages,
+with the crate not involved at all.  So the KNOWN table below does not apply —
+every divergence is a bug in one of the two models, and none may be tolerated.
 """
 import argparse
 import os
 import re
 import random
+import threading
 import subprocess
 import sys
 import tempfile
@@ -30,27 +44,128 @@ ACT_CANDIDATES = [
     os.path.join(ROOT, "target", "release", "examples", "act_trace"),
     os.path.join(ROOT, "target", "debug", "examples", "act_trace"),
 ]
+MODEL_CANDIDATES = [
+    os.path.join(ROOT, "target", "release", "examples", "reference"),
+    os.path.join(ROOT, "target", "debug", "examples", "reference"),
+]
 TIMEOUT = 30
 
 
-def find_trace_bin(act):
-    for c in (ACT_CANDIDATES if act else TRACE_CANDIDATES):
+def find_trace_bin(act, model=False):
+    if model:
+        candidates = MODEL_CANDIDATES
+    elif act:
+        candidates = ACT_CANDIDATES
+    else:
+        candidates = TRACE_CANDIDATES
+    for c in candidates:
         if os.path.exists(c):
             return c
+    if model:
+        sys.exit("build the Rust model first: "
+                 "cargo build --release --example reference")
     if act:
         sys.exit("build the ACT side first: "
                  "cargo build --release --features arena_compact --example act_trace")
     sys.exit("build the crate side first: cargo build --release --example pathmap_trace")
 
 
-def run(binary, path, extra=()):
-    try:
-        p = subprocess.run([binary, *extra, path], capture_output=True, timeout=TIMEOUT)
-    except subprocess.TimeoutExpired:
-        return None, "TIMEOUT"
-    if p.returncode != 0:
-        return None, "exit %d: %s" % (p.returncode, p.stderr.decode(errors="replace")[-800:])
-    return p.stdout.decode(errors="replace").splitlines(), None
+class Child:
+    """A resident trace binary, fed one input at a time over stdin.
+
+    Spawning a process per input dominated the old runtime — 200 inputs spent
+    more time in `sys` (fork/exec) than in `user` — so each front end now stays
+    up and takes work as `run-input <timeout-ms> <hex>`, replying with the trace
+    and one `!`-prefixed terminator.  See `examples/common/server.rs`.
+
+    Two failure modes have to be survivable, because a wedged or dead child must
+    not take the run with it:
+
+    * the child stops answering (the Rust front ends cut their own work off with
+      a thread timeout, but the oracle cannot -- see lean/Main.lean);
+    * the child dies outright (an abort or a stack overflow unwinding cannot
+      catch), which shows up as EOF.
+
+    Either way the child is killed and respawned, and the input is reported as a
+    timeout or a crash rather than silently skewing the comparison.
+    """
+
+    def __init__(self, argv, label):
+        self.argv = argv
+        self.label = label
+        self.proc = None
+        self.restarts = 0
+        self.spawn()
+
+    def spawn(self):
+        self.proc = subprocess.Popen(
+            [*self.argv, "--server"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True, errors="replace", bufsize=1,
+        )
+
+    def restart(self):
+        self.kill()
+        self.restarts += 1
+        self.spawn()
+
+    def kill(self):
+        if self.proc is None:
+            return
+        try:
+            self.proc.kill()
+            self.proc.wait(timeout=5)
+        except Exception:
+            pass
+        self.proc = None
+
+    def quit(self):
+        if self.proc is None:
+            return
+        try:
+            self.proc.stdin.write("quit\n")
+            self.proc.stdin.flush()
+            self.proc.wait(timeout=5)
+        except Exception:
+            self.kill()
+        self.proc = None
+
+    def run(self, blob):
+        """Run one input.  Returns (lines, error) exactly as the old `run` did."""
+        try:
+            self.proc.stdin.write("run-input %d %s\n" % (int(TIMEOUT * 1000), blob.hex()))
+            self.proc.stdin.flush()
+        except (BrokenPipeError, ValueError):
+            self.restart()
+            return None, "died (broken pipe)"
+
+        # A watchdog thread rather than `select` on the pipe: `readline` on a
+        # text stream pulls a whole chunk into Python's own buffer, so `select`
+        # on the fd then reports "not ready" while complete lines are sitting in
+        # memory, and the read stalls forever.  Killing the child instead turns a
+        # hang into an EOF, which the read loop below already has to handle.
+        fired = []
+        watchdog = threading.Timer(TIMEOUT + 5, lambda: (fired.append(True), self.proc.kill()))
+        watchdog.start()
+        try:
+            lines = []
+            while True:
+                line = self.proc.stdout.readline()
+                if line == "":                   # EOF: killed by the watchdog, or died
+                    self.restart()
+                    return None, "TIMEOUT" if fired else "died (no output)"
+                line = line.rstrip("\n")
+                if line.startswith("!"):
+                    if line == "!DONE":
+                        return lines, None
+                    if line == "!TIMEOUT":
+                        return None, "TIMEOUT"
+                    if line.startswith("!PANIC "):
+                        return None, "panic: %s" % line[len("!PANIC "):]
+                    return None, "protocol: %s" % line
+                lines.append(line)
+        finally:
+            watchdog.cancel()
 
 
 # Divergences already traced to confirmed `pathmap` bugs.  Keyed by the name of
@@ -164,19 +279,19 @@ def classify(msg):
     return None
 
 
-def compare(path, trace_bin, verbose, act=False):
-    model, err = run(ORACLE, path, ("--act",) if act else ())
+def compare(blob, oracle, other, other_label, act=False):
+    lean, err = oracle.run(blob)
     if err:
         return "oracle %s" % err
-    real, err = run(trace_bin, path)
+    real, err = other.run(blob)
     if err:
-        return "crate %s" % err
-    for i, (a, b) in enumerate(zip(model, real)):
+        return "%s %s" % (other_label, err)
+    for i, (a, b) in enumerate(zip(lean, real)):
         if a != b:
             tag = "ACT-VALCOUNT-ONLY " if act and act_valcount_only(a, b) else ""
-            return "%sline %d\n  model: %s\n  crate: %s" % (tag, i, a, b)
-    if len(model) != len(real):
-        return "length %d (model) vs %d (crate)" % (len(model), len(real))
+            return "%sline %d\n  lean:  %s\n  %-5s: %s" % (tag, i, a, other_label, b)
+    if len(lean) != len(real):
+        return "length %d (lean) vs %d (%s)" % (len(lean), len(real), other_label)
     return None
 
 
@@ -189,45 +304,72 @@ def main():
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("--act", action="store_true",
                     help="use an ArenaCompactTree as the read source")
+    ap.add_argument("--model", action="store_true",
+                    help="compare the Lean model against the Rust model "
+                         "(examples/reference/) instead of against the crate")
     ap.add_argument("--max-fails", type=int, default=10,
                     help="stop after this many new divergences (0 = never stop)")
     args = ap.parse_args()
 
-    trace_bin = find_trace_bin(args.act)
-    files = list(args.files)
-    tmpdir = None
+    trace_bin = find_trace_bin(args.act, args.model)
+    other_label = "rust" if args.model else "crate"
+
+    # Inputs are (name, bytes).  Nothing is written to disk: the children take
+    # their input as hex on stdin, so the old directory-of-temp-files is gone
+    # (it was never cleaned up either -- 98M of `/tmp/pathmap-diff-*` had
+    # accumulated).  A *failing* input is written out lazily, below, so it can
+    # still be replayed and shrunk.
+    inputs = [(p, open(p, "rb").read()) for p in args.files]
     if args.random:
         rng = random.Random(args.seed)
-        tmpdir = tempfile.mkdtemp(prefix="pathmap-diff-")
         for i in range(args.random):
             n = rng.randrange(8, args.maxlen)
-            blob = bytes(rng.randrange(256) for _ in range(n))
-            p = os.path.join(tmpdir, "in%05d.bin" % i)
-            with open(p, "wb") as f:
-                f.write(blob)
-            files.append(p)
+            inputs.append(("random#%05d" % i, bytes(rng.randrange(256) for _ in range(n))))
+
+    oracle = Child([ORACLE] + (["--act"] if args.act else []), "oracle")
+    other = Child([trace_bin] + (["--act"] if (args.act and args.model) else []), other_label)
+    faildir = []          # created on first failure only
+
+    def save(name, blob):
+        if not faildir:
+            faildir.append(tempfile.mkdtemp(prefix="pathmap-diff-"))
+        safe = re.sub(r"[^A-Za-z0-9_.#-]", "_", os.path.basename(name))
+        path = os.path.join(faildir[0], safe + ".bin")
+        with open(path, "wb") as f:
+            f.write(blob)
+        return path
 
     fails = 0
     known = {}
-    for path in files:
-        msg = compare(path, trace_bin, args.verbose, args.act)
-        if msg:
-            note = classify(msg)
-            if note:
-                known[note] = known.get(note, 0) + 1
-                if args.verbose:
-                    print("known %s: %s" % (path, note))
-                continue
-            fails += 1
-            print("FAIL %s: %s" % (path, msg))
-            if args.max_fails and fails >= args.max_fails:
-                print("... stopping after %d new divergences" % fails)
-                break
-        elif args.verbose:
-            print("ok   %s" % path)
+    try:
+        for name, blob in inputs:
+            msg = compare(blob, oracle, other, other_label, args.act)
+            if msg:
+                # Model against model: the KNOWN table is a list of *crate*
+                # defects, and the crate is not involved.  Every divergence is new.
+                note = None if args.model else classify(msg)
+                if note:
+                    known[note] = known.get(note, 0) + 1
+                    if args.verbose:
+                        print("known %s: %s" % (name, note))
+                    continue
+                fails += 1
+                print("FAIL %s [saved %s]: %s" % (name, save(name, blob), msg))
+                if args.max_fails and fails >= args.max_fails:
+                    print("... stopping after %d new divergences" % fails)
+                    break
+            elif args.verbose:
+                print("ok   %s" % name)
+    finally:
+        oracle.quit()
+        other.quit()
+
+    restarts = oracle.restarts + other.restarts
+    if restarts:
+        print("(%d child restart(s) after a timeout or crash)" % restarts)
     hit = sum(known.values())
     print("%d/%d inputs agree (%d hit known bugs, %d new divergences)"
-          % (len(files) - fails - hit, len(files), hit, fails))
+          % (len(inputs) - fails - hit, len(inputs), hit, fails))
     for note, n in sorted(known.items()):
         print("  known x%d: %s" % (n, note))
     return 1 if fails else 0
