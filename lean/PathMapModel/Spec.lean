@@ -160,11 +160,11 @@ theorem mem_vals_pathExists {V : Type} (t : Trie V) (kv : Path × V)
     (h : kv ∈ t.vals) : t.pathExists kv.1 = true := by
   simp only [vals, List.mem_filterMap] at h
   obtain ⟨p, _, hmap⟩ := h
-  cases hc : (t.contentsAt p).val with
+  cases hc : (t.entryAt p).val with
   | none => simp [hc] at hmap
   | some v =>
     simp [hc] at hmap
-    simpa [pathExists, ← hmap] using Contents.present_of_val hc
+    simpa [pathExists, ← hmap] using Entry.present_of_val hc
 
 /-- Pruning can never remove more bytes than separate the focus from the
 zipper's root: `prune_path` cannot prune above the root. -/
@@ -213,18 +213,18 @@ def valCountAgrees (t : Trie V) : Bool := t.valCount [] == t.vals.length
 
 /-- After `set_val` the focus is a location carrying exactly that value.
 
-One `Contents` case, rather than "the value is `v`" and "the path exists"
+One `Entry` case, rather than "the value is `v`" and "the path exists"
 checked separately — the second was only there because the first could not say
 it. -/
 def setValThenVal (ops : ValOps V) (z : Zip V) (v : V) : Bool :=
-  match ((z.setVal v).2).contents with
+  match ((z.setVal v).2).entry with
   | .valued w => ops.beq w v
   | .bare | .absent => false
 
 /-- `remove_val` clears the value but leaves the location dangling — which is
 to say the focus ends up exactly `.bare`. -/
 def removeValLeavesPath (z : Zip V) : Bool :=
-  if z.pathExists then ((z.removeVal false).2).contents matches .bare else true
+  if z.pathExists then ((z.removeVal false).2).entry matches .bare else true
 
 /-- `create_path` makes the focus exist; a second call reports "already there". -/
 def createPathIdempotent (z : Zip V) : Bool :=

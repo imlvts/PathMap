@@ -76,20 +76,22 @@ A location is therefore in one of three states, and asking about it returns all
 three at once rather than splitting the question across two accessors:
 
 ```lean
-inductive Contents (V : Type) | absent | bare | valued : V → Contents V
+inductive Entry (V : Type) | absent | bare | valued : V → Entry V
+-- absent ~ Rust's Vacant, valued ~ Occupied, and `bare` is the state a
+-- HashMap has no room for: there, but holding nothing.
 
-def contentsAt   : Trie V → Path → Contents V
-def valAt      t p := (t.contentsAt p).val       -- derived
-def pathExists t p := (t.contentsAt p).present   -- derived
+def entryAt   : Trie V → Path → Entry V
+def valAt      t p := (t.entryAt p).val       -- derived
+def pathExists t p := (t.entryAt p).present   -- derived
 ```
 
 The middle case is where this API keeps going wrong — `create_path` produces it,
 `remove_val(false)` leaves it behind, and findings 7, 8 and 15 are all
-operations that mishandle it.  A definition written against `Contents` cannot
+operations that mishandle it.  A definition written against `Entry` cannot
 quietly forget it: the `match` will not compile until it says what happens.  And
 `valued` entails existence by construction, so "a value at a path that is not
 there" is unrepresentable rather than merely false
-(`Trie.Contents.present_of_val`).
+(`Trie.Entry.present_of_val`).
 
 A zipper is that trie plus two paths:
 

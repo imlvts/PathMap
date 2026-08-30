@@ -37,6 +37,9 @@ structure Trie (V : Type) where
   if it has one.  Canonical: sorted by path, no duplicate paths, prefix-closed,
   and containing `[]`.
 
+  These are the locations that are *there*; `entryAt` answers for any path,
+  including one with no element here.
+
   One list rather than a path→value map beside a set of existing paths, because
   a value cannot then be recorded at a location that does not exist -- the
   invariant is structural instead of something the constructors have to
@@ -97,53 +100,59 @@ specification in `Spec.lean` is phrased in terms of them. -/
 
 /-- What a trie holds at a path — the whole answer, in one value.
 
+Named for `HashMap`/`BTreeMap`'s `Entry`, and standing in the same relation to
+the `entries` field: an element of `entries` is a location that is *there*,
+while an `Entry` also answers for a path that is not — Rust's `Occupied` and
+`Vacant`.  The difference is that a `pathmap` location has **three** states
+rather than two, and that third one is the whole reason this type exists.
+
 A location is in one of exactly three states, and they are worth naming because
 the middle one is where this API keeps going wrong: `create_path` produces it,
 `remove_val(false)` leaves it behind, and findings 7, 8 and 15 in FINDINGS.md are
 all about operations that mishandle it.
 
-Asking through `Contents` rather than through `pathExists` and `valAt`
+Asking through `Entry` rather than through `pathExists` and `valAt`
 separately means a definition cannot quietly forget that case: the `match` will
 not compile until it says what happens.  `valued` implies the location exists,
 so the impossible combination — a value at a path that is not there — is
 unrepresentable rather than merely untrue.
 
 Storage stays `Option V` (an entry that is present may or may not carry a
-value); `Contents` is the *observation*, and adds the case of not being there at
+value); `Entry` is the *observation*, and adds the case of not being there at
 all. -/
-inductive Contents (V : Type) where
-  /-- The path is not in the trie. -/
+inductive Entry (V : Type) where
+  /-- The path is not in the trie.  Rust's `Vacant`. -/
   | absent
   /-- The path is in the trie but carries no value — a location `path_exists`
   reports `true` for and `val` reports `none` for. -/
   | bare
-  /-- The path is in the trie and carries this value. -/
-  | valued : V → Contents V
+  /-- The path is in the trie and carries this value.  Rust's `Occupied`. -/
+  | valued : V → Entry V
 deriving Repr
 
-namespace Contents
+namespace Entry
 variable {V : Type}
 
 /-- The value, if any — what `ZipperValues::val` reports. -/
-def val : Contents V → Option V
+def val : Entry V → Option V
   | valued v => some v
   | _ => none
 
 /-- Whether the location is in the trie — what `Zipper::path_exists` reports. -/
-def present : Contents V → Bool
+def present : Entry V → Bool
   | absent => false
   | _ => true
 
 /-- Holding a value entails being there.  The impossible combination is not
 merely false, it is unrepresentable: there is no constructor for it. -/
-theorem present_of_val {c : Contents V} {v : V} (h : c.val = some v) :
+theorem present_of_val {c : Entry V} {v : V} (h : c.val = some v) :
     c.present = true := by
   cases c <;> simp [val, present] at h ⊢
 
-end Contents
+end Entry
 
 /-- What the trie holds at `p`. -/
-def contentsAt (t : Trie V) (p : Path) : Contents V :=
+def entryAt (t : Trie V) (p : Path) : Entry V :=
   match t.entries.lookup p with
   | none => .absent
   | some none => .bare
@@ -155,14 +164,14 @@ Read off the existing locations rather than off `entries` directly, so that a
 pair can only appear here if the trie genuinely holds a value there — see
 `Spec.mem_vals_pathExists`. -/
 def vals (t : Trie V) : List (Path × V) :=
-  t.paths.filterMap fun p => (t.contentsAt p).val.map (fun v => (p, v))
+  t.paths.filterMap fun p => (t.entryAt p).val.map (fun v => (p, v))
 
 /-- `Zipper::val` / `PathMap::get_val_at`: the value at `p`, if any. -/
-def valAt (t : Trie V) (p : Path) : Option V := (t.contentsAt p).val
+def valAt (t : Trie V) (p : Path) : Option V := (t.entryAt p).val
 
 /-- `Zipper::path_exists`: whether `p` is a location in the trie.  True for
 dangling paths (locations with no value and no children). -/
-def pathExists (t : Trie V) (p : Path) : Bool := (t.contentsAt p).present
+def pathExists (t : Trie V) (p : Path) : Bool := (t.entryAt p).present
 
 /-- `Zipper::child_mask`: the bytes `b` for which `p ++ [b]` exists. -/
 def childMask (t : Trie V) (p : Path) : ByteMask :=
@@ -243,7 +252,7 @@ has no value, and has no children. -/
 
 /-- Is `p` a dangling tip — an existing location with neither value nor children? -/
 def isDanglingTip (t : Trie V) (p : Path) : Bool :=
-  match t.contentsAt p with
+  match t.entryAt p with
   | .bare => t.belowIsEmpty p
   | .absent | .valued _ => false
 

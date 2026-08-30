@@ -84,7 +84,7 @@ def subPaths : List Path := (z.trie.subtrie z.root).paths
 `val` at once.  Definitions that must handle a location existing *without* a
 value are written against this, so the `match` will not compile until they say
 what happens to it. -/
-def contents : Trie.Contents V := z.trie.contentsAt z.focus
+def entry : Trie.Entry V := z.trie.entryAt z.focus
 
 /-- `Zipper::path_exists`. -/
 def pathExists : Bool := z.trie.pathExists z.focus
