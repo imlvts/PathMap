@@ -7,7 +7,9 @@ of the real crate.
 Two things live here:
 
 1. **The model** (`PathMapModel/`) — a total, executable definition of what each
-   API function *means*, with the laws relating them.
+   API function *means*, with the laws relating them.  There is a second,
+   independent transcription of it in Rust under `examples/reference/`, one file
+   per Lean file, which the harness cross-checks against this one.
 2. **The harness** (`Main.lean`, `differential.py`, `shrink.py`, and
    `../examples/common/harness.rs`) — the machinery that runs the same generated
    program against the model and against `pathmap`, and diffs the results.
@@ -187,7 +189,7 @@ header:
   r0 := u8 % 4 ; r0 × pathbyte              -- write zipper root
   r1 := u8 % 4 ; r1 × pathbyte              -- read  zipper root
 body:
-  repeated: op := u8 % 47 ; operands per op
+  repeated: op := u8 % 56 ; operands per op
 ```
 
 Every path byte is masked to `b % 4`, so generated tries share prefixes heavily
@@ -199,8 +201,63 @@ both zippers (relative path, origin path, existence, value, child count, value
 count); the run ends with a full dump of both maps.  Any behavioural difference
 is a textual diff.
 
-The op table lives in `Fuzz.lean` (`PathMapModel.Fuzz.step`) and
-`examples/common/harness.rs`; **the two must be changed together.**
+The op table lives in `Fuzz.lean` (`PathMapModel.Fuzz.step`),
+`examples/common/harness.rs` and `examples/reference/main.rs`; **the three must
+be changed together.**
+
+### Three front ends
+
+| binary | drives | built with |
+|---|---|---|
+| `lean/.lake/build/bin/pathmap-oracle` | the Lean model | `cd lean && lake build` |
+| `target/release/examples/pathmap_trace` | the real crate | `cargo build --release --example pathmap_trace` |
+| `target/release/examples/reference` | the Rust model (`examples/reference/`) | `cargo build --release --example reference` |
+
+`differential.py` diffs the Lean oracle against one of the other two:
+
+```bash
+./lean/differential.py --random 500            # Lean model vs. the crate
+./lean/differential.py --model --random 500    # Lean model vs. the Rust model
+./lean/differential.py --act   --random 500    # Lean model vs. an ACT read source
+```
+
+### Resident children
+
+Each front end is spawned once with `--server` and stays up, taking inputs as
+hex on stdin — `run-input <timeout-ms> <hex>`, replying with the trace and one
+`!DONE` / `!TIMEOUT` / `!PANIC <msg>` terminator.  The protocol lives in
+`examples/common/server.rs`, shared by the crate front ends and by the reference
+model (it is plumbing; it knows nothing about tries).
+
+This replaced a temp file plus two fresh processes per input.  Process creation
+dominated: 2000 inputs took 10.3s wall with 6.4s of that in `sys`, and now take
+1.8s with 0.7s in `sys` — 5.6x faster overall, 10x less kernel time.  The old
+scheme also never deleted its temp directories; 98M of `/tmp/pathmap-diff-*` had
+accumulated.  Only failing inputs are written out now, and the path is printed
+so `shrink.py` can still take them.
+
+The Rust front ends run each input on a thread they can abandon, so a hang costs
+one input rather than the process — both crate hangs in a 400-input pass are
+absorbed without a respawn.  The oracle cannot: `IO.asTask` with `IO.waitAny`
+blocks on the work task and never sees the timer, and polling `IO.hasFinished`
+blocks on the first call (measured: a 50ms budget returned "finished" after
+99.5s).  So the driver enforces that deadline from outside, killing and
+respawning a child that stops answering — which it must handle anyway, since no
+in-process timeout saves a child that has died outright.
+
+`--model` is the acceptance test for the Rust port in `examples/reference/`: two
+independent transcriptions of the same specification, in two languages, with the
+crate not involved at all.  So the table of known crate defects does not apply
+there — every divergence is a bug in one of the two models, and none may be
+tolerated.  Current state: 6000 random programs and the corpus agree exactly.
+
+That comparison is what covers the parts of the model the Rust unit tests cannot
+reach.  `examples/reference/check.rs` checks its laws over ~37k distinct states, but a law
+only catches what it asserts, and almost nothing asserts an `AlgebraicStatus` —
+the `merge` flags of `meet_into` / `subtract_into` / `join_map_into` are visible
+*only* in the trace.  Deliberately corrupting `AlgStatus::merge`, `k_path_from`,
+`descend_to_val` and `prune_count` in turn, each mutant diverges within 120
+random programs.
 
 ### Deliberately skipped operations
 
