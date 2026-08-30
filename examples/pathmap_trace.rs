@@ -17,7 +17,12 @@ fn main() {
     // checks, which is handy for replaying a corpus without cargo-fuzz.
     let args: Vec<String> = std::env::args().skip(1).collect();
     let check = args.iter().any(|a| a == "--check");
-    let file = args.into_iter().find(|a| a != "--check");
+    // Resident mode: one process, many inputs over stdin.  See `serve`.
+    if args.iter().any(|a| a == "--server") {
+        serve(check, run);
+        return;
+    }
+    let file = args.into_iter().find(|a| a != "--check" && a != "--server");
     let bytes: Vec<u8> = match file {
         Some(p) => std::fs::read(p).expect("cannot read input"),
         None => {
