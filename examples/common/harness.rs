@@ -927,3 +927,6 @@ fn run_ops<R: ReadSource>(
     }
 
 }
+
+// The resident-server protocol, shared with `examples/reference/`.
+include!("server.rs");
