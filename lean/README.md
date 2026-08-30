@@ -410,6 +410,40 @@ round-trips faithfully, and `merge_zipper_into_file` -- ACT's one write-shaped
 operation -- matches its specification on all 300 cases of
 `examples/act_merge_check.rs`.
 
+## Sharing
+
+`pathmap` is a DAG: subtries are shared between paths, `graft` clones a
+refcounted pointer rather than the data, and writes go through copy-on-write.
+**The model has no notion of nodes at all** — a `Trie` is a flat map from paths
+to entries, so grafting the same subtrie into two places yields two independent
+copies by construction, and sharing is invisible.
+
+That is deliberate.  Sharing is an implementation strategy, not part of the
+meaning, and the crate says so itself about the two methods that expose it:
+`shared_node_id` "is not stable across runs", and of `is_shared`, "your code
+must never rely on the return value for correctness".  Specifying them would
+mean specifying non-determinism, so `ZipperConcrete` is out of the harness.
+
+Not modelling sharing is what makes sharing bugs *detectable* rather than what
+hides them: the model says two grafted copies are independent, so a mutation
+leaking from one to the other is a divergence.  Where representation does leak
+into observable results, that is a finding — 8, 14, 15 and 16 all are.
+
+Two properties the differential harness cannot reach are checked directly:
+
+```bash
+cargo run --example sharing_check
+```
+
+* **Copy-on-write** — graft one source into three places, write under one, and
+  the others must be untouched.
+* **`merkleize`** — the one operation whose purpose is to *change* sharing, so
+  the one place the model's blind spot is deliberately exercised.  The
+  observable trie must survive unchanged.
+
+Both hold wherever they run (266/266 and 214/214, 1464 node references reused)
+and both abort on tries containing a *shared dangling path* — see finding 16.
+
 ## The libFuzzer target
 
 `fuzz/fuzz_targets/zipper_ops.rs` runs the same decoder under libFuzzer and

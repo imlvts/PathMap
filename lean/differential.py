@@ -126,7 +126,8 @@ KNOWN = [
      "graft() builds a node with both a child and a value on the same key when "
      "the destination node holds a single line [graft_ambiguous_node]"),
     (["src/trie_node.rs", "make_unique"],
-     "make_unique on an empty sentinel node"),
+     "copy-on-write cannot make a shared dangling path unique (finding 16) "
+     "[shared_dangling_cow]"),
     # ArenaCompactTree read source (differential.py --act).
     (["ACT-VALCOUNT-ONLY"],
      "ACTZipper::val_count() counts from the zipper root, not the focus "
