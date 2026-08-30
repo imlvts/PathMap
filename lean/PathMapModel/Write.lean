@@ -30,7 +30,9 @@ def withTrie (t : Trie V) : Zip V := { z with trie := t }
 
 /-! ## Values at the focus -/
 
-/-- `ZipperWriting::get_val_mut` — same observation as `val`, mutably. -/
+/-- `ZipperWriting::get_val_mut` — same observation as `val`, mutably.
+
+Returns `some` exactly when `val` does; it never creates anything. -/
 def getValMut : Option V := z.val
 
 /-- `ZipperWriting::set_val`: sets the value at the focus, **creating the path**
@@ -39,11 +41,35 @@ def setVal (v : V) : Option V × Zip V :=
   let (old, t) := z.trie.setVal z.focus v
   (old, z.withTrie t)
 
-/-- `ZipperWriting::get_val_or_set_mut`. -/
+/-- Writing through the reference `get_val_mut` returns.
+
+Specified as: when there is a value, this is `set_val`; when there is not, it is
+a no-op — in particular it must **not** create the path, which is what separates
+it from `set_val`. -/
+def getValMutWrite (v : V) : Option V × Zip V :=
+  match z.val with
+  | some old => (some old, (z.setVal v).2)
+  | none => (none, z)
+
+/-- `ZipperWriting::get_val_or_set_mut`: the value at the focus, inserting
+`default` if there is none.  Inserting creates the path, as `set_val` does. -/
 def getValOrSetMut (d : V) : V × Zip V :=
   match z.val with
   | some v => (v, z)
   | none => (d, (z.setVal d).2)
+
+/-- `ZipperWriting::get_val_or_set_mut_with`: as above, but the value is produced
+by a closure.
+
+The documented contract is that the closure supplies the value "if no value
+exists", so it must be called **exactly when the focus has no value** — calling
+it otherwise would be observable to any caller whose closure has a side effect
+(allocating, taking a lock, bumping a counter).  The second component of the
+result records whether it ran, and the harness compares that too. -/
+def getValOrSetMutWith (d : V) : V × Bool × Zip V :=
+  match z.val with
+  | some v => (v, false, z)
+  | none => (d, true, (z.setVal d).2)
 
 /-- `ZipperWriting::prune_path`: delete the dangling chain ending at the focus,
 stopping at the first location above it that carries a value or branches.  The

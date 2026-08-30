@@ -67,8 +67,11 @@ KNOWN = [
     (["ESCAPED-ROOT"],
      "a zipper left its own root: root_prefix_path() changed [root_escape]"),
     (["to_next_val"],
-     "to_next_val() misses downstream values when the focus was reached by "
-     "to_next_step() [to_next_val_after_step]"),
+     "to_next_val() misses downstream values after a token-maintaining move "
+     "[to_next_val_after_step]"),
+    (["to_next_get_val"],
+     "to_next_get_val() inherits the to_next_val() iteration defect "
+     "[to_next_val_after_step]"),
     (["join_into"],
      "join_into() drops the source subtrie when the destination map is empty "
      "[join_into_empty_dst]"),

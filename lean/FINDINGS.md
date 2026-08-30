@@ -42,22 +42,46 @@ same `join_into` into a *non-empty* destination produces the right answer.  Only
 the empty-destination case loses the data, and it reports `Identity` — "self was
 not modified" — rather than failing.
 
-## 2. `to_next_val` misses every downstream value after `to_next_step`
+## 2. `to_next_val` gives up after a token-maintaining move
 
-`case: to_next_val_after_step` — **silent wrong answer**
+`case: to_next_val_after_step` -- **silent wrong answer**
 
 ```rust
-// trie: [] = 0, [0,0,0,0] = 7   (with dangling interior locations)
-let mut rz = map.read_zipper();
-rz.to_next_step();                  // -> true, now at [0]
-rz.to_next_val();                   // -> FALSE, resets to the root
+// trie: { [] = 0, [0,0] = 7 }, with [0] existing but holding no value
+let mut z = map.read_zipper();
+z.descend_first_byte();   // lands on [0]
+z.to_next_val();          // -> FALSE, resets to the root; [0,0] is never seen
 ```
 
-Reaching the very same location with `descend_to(&[0])` instead makes
-`to_next_val` return `true` at `[0,0,0,0]`.  Iteration state left behind by
-`to_next_step` leaks into the next `to_next_val`; two public read-only methods
-are not composable.  Anyone enumerating values from a sub-position silently sees
-an empty result.
+Nine ways of reaching the very same location `[0]`, then the same
+`to_next_val()`:
+
+| how the zipper got to `[0]` | `to_next_val()` |
+| --- | --- |
+| `descend_to([0])` | `true`, at `[0,0]` |
+| `descend_to_byte(0)` | `true`, at `[0,0]` |
+| `descend_indexed_byte(0)` | `true`, at `[0,0]` |
+| `descend_last_byte()` | `true`, at `[0,0]` |
+| `descend_to_existing_byte(0)` | `true`, at `[0,0]` |
+| `move_to_path([0])` | `true`, at `[0,0]` |
+| **`descend_first_byte()`** | **`false`** |
+| **`to_next_step()`** | **`false`** |
+| **`descend_first_k_path(1)`** | **`false`** |
+
+The three that break are exactly the operations whose `ReadZipperCore`
+implementations maintain the internal `focus_iter_token`; the rest leave it
+alone.  The position, the path and every other observation are identical in all
+nine cases, so nothing in the public API distinguishes a poisoned zipper from a
+healthy one.
+
+Two consequences worth separating out:
+
+* `descend_first_byte()` is documented as having "identical behavior to passing
+  `0` to `descend_indexed_byte`".  It does not: only one of the two breaks the
+  subsequent iteration.
+* `to_next_get_val()` fails identically, since it delegates to `to_next_val()`.
+  So does any loop built on `descend_first_byte` + `to_next_val`, which is the
+  natural way to write a depth-first walk.
 
 ## 3. A read zipper can escape its own root
 
