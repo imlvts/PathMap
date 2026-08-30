@@ -149,6 +149,23 @@ end Path
 
 namespace Trie
 
+/-- Every location carrying a value exists.
+
+This used to be a runtime check in `Laws`, because the two-list representation
+allowed a value to be recorded at a path that was not listed as existing, and
+the constructors had to be trusted to keep the two in step.  With one list of
+`(path, Option value)` the property is structural, so it is a theorem instead:
+`vals` reads off a sublist of `entries`, and `paths` reads off all of them. -/
+theorem mem_vals_pathExists {V : Type} (t : Trie V) (kv : Path × V)
+    (h : kv ∈ t.vals) : t.pathExists kv.1 = true := by
+  simp only [vals, List.mem_filterMap] at h
+  obtain ⟨e, he, hmap⟩ := h
+  simp only [pathExists, paths, List.contains_iff_mem, List.mem_map]
+  refine ⟨e, he, ?_⟩
+  cases he2 : e.2 with
+  | none => simp [he2] at hmap
+  | some v => simp [he2] at hmap; simp [← hmap]
+
 /-- Pruning can never remove more bytes than separate the focus from the
 zipper's root: `prune_path` cannot prune above the root. -/
 theorem pruneCount_le {V : Type} (t : Trie V) (rootLen : Nat) (p : Path) :
@@ -171,7 +188,11 @@ namespace Laws
 
 variable {V : Type}
 
-/-- Every location carrying a value exists. -/
+/-- Every location carrying a value exists.
+
+Kept as a runtime check only to guard the *fixtures*: it is now structurally
+true of any `Trie` (see `Trie.mem_vals_pathExists`), so a failure here would
+mean a fixture was built by hand rather than through the constructors. -/
 def valsExist (t : Trie V) : Bool :=
   t.vals.all (fun kv => t.pathExists kv.1)
 

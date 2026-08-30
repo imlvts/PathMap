@@ -33,13 +33,31 @@ namespace PathMapModel
 existing locations.  Canonical: both fields sorted and duplicate-free, `paths`
 prefix-closed and a superset of the keys of `vals`, and `[] ∈ paths`. -/
 structure Trie (V : Type) where
-  vals : List (Path × V)
-  paths : List Path
+  /-- Every location that exists, in depth-first order, each carrying its value
+  if it has one.  Canonical: sorted by path, no duplicate paths, prefix-closed,
+  and containing `[]`.
+
+  One list rather than a path→value map beside a set of existing paths, because
+  a value cannot then be recorded at a location that does not exist -- the
+  invariant is structural instead of something the constructors have to
+  maintain.  A `none` here is exactly a dangling path. -/
+  entries : List (Path × Option V)
 deriving Repr
 
 namespace Trie
 
 variable {V : Type}
+
+/-! ## Views
+
+The two halves the API observes, derived rather than stored. -/
+
+/-- Every existing location, in depth-first order. -/
+def paths (t : Trie V) : List Path := t.entries.map (·.1)
+
+/-- Every location that carries a value, with it, in depth-first order. -/
+def vals (t : Trie V) : List (Path × V) :=
+  t.entries.filterMap fun e => e.2.map (fun v => (e.1, v))
 
 /-! ## Canonicalisation -/
 
@@ -64,11 +82,15 @@ components.  `paths` is completed with every prefix of every raw path and of
 every key carrying a value, so callers never have to maintain closure by hand. -/
 def mk' (vals : List (Path × V)) (paths : List Path) : Trie V :=
   let vs := normVals vals
-  let raw := [] :: (paths ++ vs.map (·.1))
-  { vals := vs, paths := Path.sortDedup (raw.flatMap Path.prefixes) }
+  -- Every location that must exist: the root, the ones asked for, the ones
+  -- carrying a value, and every prefix of those.  Each then takes whatever
+  -- value was bound to it, so a valued location cannot fail to exist.
+  let existing := Path.sortDedup
+    ((([] : Path) :: (paths ++ vs.map (·.1))).flatMap Path.prefixes)
+  { entries := existing.map fun p => (p, vs.lookup p) }
 
 /-- The empty trie: the root exists, nothing else does. -/
-def empty : Trie V := { vals := [], paths := [[]] }
+def empty : Trie V := { entries := [([], none)] }
 
 instance : Inhabited (Trie V) := ⟨empty⟩
 
@@ -78,7 +100,7 @@ These four functions are the *entire* observable interface of a trie.  Every
 specification in `Spec.lean` is phrased in terms of them. -/
 
 /-- `Zipper::val` / `PathMap::get_val_at`: the value at `p`, if any. -/
-def valAt (t : Trie V) (p : Path) : Option V := t.vals.lookup p
+def valAt (t : Trie V) (p : Path) : Option V := (t.entries.lookup p).join
 
 /-- `Zipper::path_exists`: whether `p` is a location in the trie.  True for
 dangling paths (locations with no value and no children). -/
@@ -265,8 +287,13 @@ def restrictBelowRoot (a b : Trie V) : Trie V :=
 `AlgebraicStatus::Identity` — `pathmap` reports `Identity(SELF_IDENT)` exactly
 when the operation's output equals `self`. -/
 def beqT (ops : ValOps V) (a b : Trie V) : Bool :=
-  a.paths == b.paths && a.vals.length == b.vals.length &&
-    (a.vals.zip b.vals).all (fun xy => xy.1.1 == xy.2.1 && ops.beq xy.1.2 xy.2.2)
+  a.entries.length == b.entries.length &&
+  (a.entries.zip b.entries).all fun xy =>
+    xy.1.1 == xy.2.1 &&
+      (match xy.1.2, xy.2.2 with
+       | none, none => true
+       | some x, some y => ops.beq x y
+       | _, _ => false)
 
 /-! ## Path surgery -/
 
