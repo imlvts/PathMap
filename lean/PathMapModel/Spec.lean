@@ -158,7 +158,7 @@ theorem pruneCount_le {V : Type} (t : Trie V) (rootLen : Nat) (p : Path) :
   · omega
   · split
     · omega
-    · exact Nat.min_le_left _ _
+    · exact Nat.sub_le_sub_left (Nat.le_max_left _ _) _
 
 end Trie
 

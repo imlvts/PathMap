@@ -218,6 +218,112 @@ around the new return types, and one was added — `ascend_accounts`, that the
 count `ascend` reports is exactly the depth the focus lost, which is what a
 blind caller has to rely on.
 
+## Is the specification just a copy of the bugs?
+
+A hand-written model checked against the implementation it was written from has
+a specific failure mode: if a defect was **transcribed into the spec**, the two
+agree, and the harness reports that agreement as confirmation.  That is worse
+than no signal.
+
+Most of the model is not exposed to this — it is derived from trait
+documentation (`to_next_val` is "the least existing location after the focus
+carrying a value"), from what the types force, or from mathematics (join is
+union).  But some of it is not.  Auditing the ~130 definitions, these encode
+observed behaviour rather than intent, and are the places to distrust:
+
+| definition | why it is suspect |
+| --- | --- |
+| `AlgStatus.merge` | transcribed line-for-line from `src/ring.rs` |
+| `joinVal` / `meetVal` / `subVal` | follow `Option<V>`'s impls in `src/ring.rs` |
+| `Zip.prunePath` | stop depth determined empirically; the doc comment is wrong |
+| `Zip.toNextKPath` | deliberately follows the native `ReadZipper` over the trait default |
+| `Trie.dropHead` | "values at depth exactly `k` are lost" is observed, not documented |
+| `Zip.joinMapInto` | the short-circuit asymmetry with `join_into` is observed |
+| `Zip.meet2` | "never reports `Identity`" comes from a comment in the impl |
+| `Check.lean` fixtures | expected values copied from the crate's own passing tests |
+
+**The primary defence is the style the model is written in.**  A definition that
+restates its docstring can be checked by reading it; a definition that *simulates
+the implementation* has to be executed in your head, and that is where a
+transcribed bug hides.  So every operation is written declaratively -- as "the
+location such that ...", never as a loop that walks there:
+
+```lean
+/-- the next existing location carrying a value, in depth-first order -/
+def toNextVal : Bool × Zip V :=
+  match z.subPaths.find? (fun q => Path.lt z.path q && (z.trie.valAt (z.root ++ q)).isSome) with
+  | some q => (true, { z with path := q })
+  | none => (false, z.reset)
+```
+
+`subPaths` is in depth-first order, so `find?` *is* "the next one".  The
+docstring and the code say the same thing, and no amount of staring at
+`ReadZipperCore`'s iterator tokens would change what this definition means.
+
+The same idiom covers ascent -- "the deepest strict ancestor that branches,
+carries a value, or is the root" is a `filter` over `Path.properPrefixes`
+followed by `getLast?`, not a walk upward.  `descend_until` is "the nearest
+descendant that is a value or is not single-childed".  `descend_to_existing` is
+"the longest prefix of `k` that still exists", which is well-defined precisely
+because existence is prefix-closed.  Nothing in the model recurses with a fuel
+bound any more, and nothing computes an index like `p.length - 1 - j`.
+
+This costs efficiency -- several definitions are quadratic where the crate is
+constant-time -- and that is the intended trade.  The model is a specification
+that happens to run, not an implementation.
+
+Four further defences, in increasing order of how much they actually prove:
+
+**1. Metamorphic laws** (`Spec.lean` §2) relate *different* API functions to each
+other — `take_map` then `graft_map` is the identity, `drop_head` undoes
+`insert_prefix`, `join` is commutative on paths.  Transcribing one function's
+behaviour does not make these hold, so they keep working when the definitions
+are contaminated.
+
+**2. Naive oracles** (`Check.lean`) re-derive the same answer from a deliberately
+stupid, independent route.  `joinKeysOracle`, `meetKeysOracle` and
+`subKeysOracle` say which keys survive using set theory and nothing else — no
+`ValOps`, no `Trie`.  Where they agree with the real definitions, the `ring.rs`
+transcription is excluded as a source of error.  This is the same technique the
+crate's own `tests/pathmap_algebra_differential.rs` uses for `restrict`, where it
+caught a real `prestrict` bug.
+
+**3. A third implementation.**  `ArenaCompactTree` implements the same read
+specification independently, so `differential.py --act` triangulates: the model
+agreeing with `PathMap` while disagreeing with ACT is evidence the model is not
+merely echoing either one.  It found three ACT defects.
+
+**4. Mutation testing** (`lean/mutate.py`) measures sensitivity directly rather
+than arguing for it.  It injects a deliberate defect
+into `pathmap`, rebuilds, and re-runs the differential over a fixed corpus:
+
+```bash
+./lean/mutate.py                 # the whole set in lean/mutants.toml
+./lean/mutate.py --only ascend   # one group
+```
+
+A mutant is **killed** if the differential's verdict changes, and **SURVIVED**
+if the crate demonstrably behaves differently yet the verdict does not move —
+which is precisely what a transcribed bug looks like from the outside.  Mutants
+whose traces are byte-identical to baseline are reported as **equivalent**: the
+corpus never reaches them, which is a coverage fact, not a spec failure.
+Comparing whole verdicts rather than pass counts means the defects already in
+FINDINGS.md cannot mask a mutant.
+
+A first run over `lean/mutants.toml` killed 6 of 6 behaviour-changing mutants
+with no survivors -- but 9 of the 15 came back `equivalent`, meaning the corpus
+never reaches them, and most of those sit in `ring.rs`, which is exactly where
+the transcription risk is concentrated.  So that run is *inconclusive* about the
+suspect definitions rather than reassuring about them, and it says more about the
+31% line coverage of `ring.rs` than about the spec.  Raising algebraic coverage
+would make the technique bite where it is most needed.
+
+What none of this can do is prove the specification *right*.  It can only show
+that the specification is not vacuous in a given region, and narrow the set of
+places where "the model and the crate agree" might mean "they are wrong
+together".  Every survivor is a place to go and re-derive the definition from the
+documentation rather than from the code.
+
 ## Current agreement
 
 500 random programs (`./lean/differential.py --random 500 --seed 99 --max-fails 0`),
