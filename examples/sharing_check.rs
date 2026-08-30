@@ -98,7 +98,7 @@ fn main() {
     // Print the trie behind the first panic of each kind, so a failure is
     // reproducible rather than just counted.
     let mut shown: std::collections::BTreeSet<String> = Default::default();
-    let mut note = |panics: &mut std::collections::BTreeMap<String, usize>,
+    let note = |panics: &mut std::collections::BTreeMap<String, usize>,
                     shown: &mut std::collections::BTreeSet<String>,
                     phase: &str, e: String, ctx: &BTreeMap<Vec<u8>, Option<u64>>| {
         let key = format!("{phase}: {e}");
