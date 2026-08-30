@@ -335,6 +335,25 @@ def takeThenGraft (ops : ValOps V) (z : Zip V) : Bool :=
   let z2 := z1.graftMap (m.getD Trie.empty)
   Trie.beqT ops z2.trie z.trie
 
+/-- Grafting one subtrie into two places makes two *independent* copies:
+writing under one leaves the other exactly as it was.
+
+In the model this cannot fail — a `Trie` is a flat list of entries, so the two
+copies are separate elements and there is no aliasing to leak through.  The law
+is stated anyway for two reasons: it is what the crate must do (`graft` clones a
+refcounted pointer, so the copies really are shared until copy-on-write
+separates them), and it would catch a model that grew sharing of its own.
+
+See FINDINGS.md #16: the crate gets this right where it completes, but aborts
+when the shared subtrie contains a dangling path. -/
+def graftedCopiesIndependent (ops : ValOps V) (s : Trie V)
+    (a b k : Path) (v : V) : Bool :=
+  let at_ := fun (t : Trie V) (p : Path) => ({ trie := t, root := [], path := p } : Zip V)
+  let one := ((at_ Trie.empty a).graftMap s).trie
+  let both := ((at_ one b).graftMap s).trie
+  let after := (((at_ both (a ++ k)).setVal v).2).trie
+  Trie.beqT ops (both.subtrie b) (after.subtrie b)
+
 /-- `graft` copies the source subtrie: after grafting, `make_map` at the
 destination equals `make_map` at the source. -/
 def graftThenMakeMap (ops : ValOps V) (dst src : Zip V) : Bool :=

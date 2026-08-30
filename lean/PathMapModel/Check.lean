@@ -137,6 +137,9 @@ def dropT1Result : T := ((zipAt dropT1 [0x31,0x32,0x33,0x3a] []).joinKPathInto o
 #guard allZips.all (removeUnmaskedEmptyMask ops)
 #guard allZips.all (fun z => [[0], [0,1], [2,2]].all (dropHeadUndoesInsertPrefix ops z))
 #guard allZips.all (fun z => allZips.all (fun w => graftThenMakeMap ops z w))
+#guard fixtures.all (fun s =>
+  [([0], [9]), ([1], [2]), ([0, 0], [1, 1])].all (fun ab =>
+    graftedCopiesIndependent ops s ab.1 ab.2 [3, 7] 999))
 
 /-! ## Algebraic law checks -/
 
