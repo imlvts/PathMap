@@ -23,7 +23,7 @@ header:
   r0        := u8 % 4 ; r0 × pathbyte    -- write zipper root
   r1        := u8 % 4 ; r1 × pathbyte    -- read  zipper root
 body:
-  repeated: op := u8 % 48 ; operands per op (see `Op.decode`)
+  repeated: op := u8 % 53 ; operands per op (see `Op.decode`)
 ```
 
 Every **path byte** is masked to `b % 4`, so the generated tries share prefixes
@@ -192,7 +192,7 @@ a following `u8 % 2` byte (`0` = write zipper, `1` = read zipper); ops `27`–`4
 are write-zipper operations. -/
 
 /-- Number of distinct operations.  Must match `NOPS` in `examples/common/harness.rs`. -/
-def nops : Nat := 48
+def nops : Nat := 53
 
 /-- A full `k`-path iteration: `descend_first_k_path` followed by
 `to_next_k_path` until it runs out (capped at 32 stops).  Returns the locations
@@ -449,6 +449,40 @@ def step (s : St) (d : Dec) : Option (St × Dec) := do
              -- of where it went, so it is compared byte for byte.
              let (r, obs, s) := onTargetObs s t (fun z => z.descendUntilObserved)
              some (emit s "descend_until_observed" (showBool r ++ ":" ++ hexPath obs), d)
+  | 48 => do let (v, d) ← d.u8
+             -- Writing through the reference `get_val_mut` hands back.  It must
+             -- behave like `set_val` where a value exists and do nothing --
+             -- crucially, *not* create the path -- where one does not.
+             let (old, z) := s.wz.getValMutWrite (UInt64.ofNat v.toNat)
+             some (emit { s with wz := z } "get_val_mut_write" (showVal old), d)
+  | 49 => do let (v, d) ← d.u8
+             let (r, z) := s.wz.getValOrSetMut (UInt64.ofNat v.toNat)
+             some (emit { s with wz := z } "get_val_or_set_mut" (showVal (some r)), d)
+  | 50 => do let (v, d) ← d.u8
+             -- `ran` records whether the closure was invoked.  The contract says
+             -- it supplies the value "if no value exists", so invoking it when a
+             -- value is already present is observable to any caller whose closure
+             -- has a side effect.
+             let (r, ran, z) := s.wz.getValOrSetMutWith (UInt64.ofNat v.toNat)
+             some (emit { s with wz := z } "get_val_or_set_mut_with"
+               (showVal (some r) ++ ":" ++ showBool ran), d)
+  | 51 => do let (t, d) ← d.mod 2; let (p, d) ← d.path
+             -- `ZipperReadOnlyValues::get_val`/`get_val_at` differ from
+             -- `val`/`val_at` only in the lifetime of the reference they return,
+             -- so they must give the same answer.  `agree` is `1` in the model by
+             -- construction; a `0` from the crate is the whole point of the op.
+             let z := getTarget s t
+             some (emit s "get_val_agrees"
+               (showVal z.val ++ ":" ++ showVal (z.valAt p) ++ ":1"), d)
+  | 52 => do -- `ZipperReadOnlyIteration::to_next_get_val` must advance exactly as
+             -- `to_next_val` does and hand back the value at the new focus.
+             -- ACT does not implement the trait, so the op is unavailable there.
+             if s.act then some (emit s "to_next_get_val" "skip", d) else
+             do
+             let (moved, z) := s.rz.toNextVal
+             let v := if moved then z.val else none
+             some (emit { s with rz := z } "to_next_get_val"
+               (showBool moved ++ ":" ++ showVal v ++ ":1"), d)
   | _ => some (emit s "nop" "-", d)
 
 /-- Run operations until the input is exhausted or `fuel` runs out. -/

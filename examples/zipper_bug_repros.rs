@@ -40,7 +40,7 @@ fn chain_map() -> PathMap<u64> {
 
 const CASES: &[(&str, &str)] = &[
     ("join_into_empty_dst", "join_into silently drops the source when the destination map is empty"),
-    ("to_next_val_after_step", "to_next_val misses every downstream value after to_next_step"),
+    ("to_next_val_after_step", "to_next_val misses every downstream value after descend_first_byte / to_next_step / descend_first_k_path"),
     ("root_escape", "a read zipper whose root does not exist walks out of its own root"),
     ("insert_prefix_empty", "insert_prefix(b\"\") destroys the subtrie instead of doing nothing"),
     ("drop_head_zero", "join_k_path_into(0) destroys the subtrie instead of doing nothing"),
@@ -106,22 +106,39 @@ fn run(name: &str) {
             println!("  graft into EMPTY  -> dst = {}", vals(&grafted));
         }
 
-        // Reaching a location with `to_next_step` leaves iteration state that
-        // makes the next `to_next_val` give up immediately; reaching the very
-        // same location with `descend_to` works.
+        // Three movement operations leave iteration state that makes the next
+        // `to_next_val` give up immediately.  Every route below lands the zipper
+        // on exactly the same location; only *how it got there* differs.
         "to_next_val_after_step" => {
-            let map = chain_map();
-            println!("  trie: {}", paths(&map));
-            let mut a = map.read_zipper();
-            let moved = a.to_next_step();
-            let at = a.path().to_vec();
-            let r = a.to_next_val();
-            println!("  to_next_step->{moved} at {at:?}; to_next_val->{r} at {:?}   <-- expected true at [0,0,0,0]",
-                     a.path());
-            let mut b = map.read_zipper();
-            b.descend_to(&[0u8]);
-            let r = b.to_next_val();
-            println!("  descend_to([0]);            to_next_val->{r} at {:?}", b.path());
+            let mut map = PathMap::<u64>::new();
+            { let mut w = map.write_zipper(); w.set_val(0); }
+            map.insert(&[0u8, 0], 7);
+            println!("  trie: {}   ([0] exists but holds no value)", paths(&map));
+            println!("  each route lands on [0]; to_next_val() should then reach [0,0]");
+
+            type Rz<'a> = pathmap::zipper::ReadZipperUntracked<'a, 'static, u64>;
+            let ways: Vec<(&str, Box<dyn Fn(&mut Rz)>)> = vec![
+                ("descend_to([0])", Box::new(|z: &mut Rz| { z.descend_to(&[0u8]); })),
+                ("descend_to_byte(0)", Box::new(|z: &mut Rz| { z.descend_to_byte(0); })),
+                ("descend_indexed_byte(0)", Box::new(|z: &mut Rz| { z.descend_indexed_byte(0); })),
+                ("descend_last_byte()", Box::new(|z: &mut Rz| { z.descend_last_byte(); })),
+                ("descend_to_existing_byte(0)", Box::new(|z: &mut Rz| { z.descend_to_existing_byte(0); })),
+                ("move_to_path([0])", Box::new(|z: &mut Rz| { z.move_to_path(&[0u8]); })),
+                ("descend_first_byte()", Box::new(|z: &mut Rz| { z.descend_first_byte(); })),
+                ("to_next_step()", Box::new(|z: &mut Rz| { z.to_next_step(); })),
+                ("descend_first_k_path(1)", Box::new(|z: &mut Rz| { z.descend_first_k_path(1); })),
+            ];
+            for (label, f) in &ways {
+                let mut z = map.read_zipper();
+                f(&mut z);
+                assert_eq!(z.path(), &[0u8], "{label} did not land on [0]");
+                let r = z.to_next_val();
+                println!("    {label:28} -> to_next_val = {r:<5} at {:?}{}",
+                         z.path(), if r { "" } else { "   <-- BROKEN" });
+            }
+            println!("  note descend_first_byte() is documented as having \"identical behavior\"");
+            println!("  to descend_indexed_byte(0), yet only the former breaks the iteration.");
+            println!("  to_next_get_val() fails identically, since it delegates to to_next_val().");
         }
 
         // `path()` and `at_root()` still say "at my root" while `origin_path()`

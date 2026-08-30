@@ -15,7 +15,7 @@
 
 
 /// Number of distinct operations. Must match `PathMapModel.Fuzz.nops`.
-const NOPS: usize = 48;
+const NOPS: usize = 53;
 /// Maximum operations executed. Must match the `maxSteps` default in `Fuzz.run`.
 const MAX_STEPS: usize = 256;
 /// Maximum entries in a `dump`. Must match `Fuzz.dumpAt`.
@@ -172,6 +172,16 @@ trait ReadSource:
     /// `make_map().val_count()`, or `None` if subtries cannot be materialised.
     fn make_map_val_count(&self) -> Option<usize>;
 
+    /// `ZipperReadOnlyValues::get_val` / `get_val_at`, paired with whether they
+    /// agree with `val` / `val_at`.  The two differ only in the lifetime of the
+    /// reference returned, so a disagreement is a defect.
+    fn get_val_probe(&self, path: &[u8]) -> (Option<u64>, Option<u64>, bool);
+
+    /// `ZipperReadOnlyIteration::to_next_get_val`: advance and hand back the
+    /// value, with whether it agrees with `to_next_val` followed by `val`.
+    /// `None` when the zipper does not implement the trait.
+    fn to_next_get_val_probe(&mut self) -> Option<(bool, Option<u64>, bool)>;
+
     fn do_graft<W: ZipperWriting<u64>>(&self, _wz: &mut W) -> bool { false }
     fn do_graft_src_at<W: ZipperWriting<u64>>(&self, _wz: &mut W, _p: &[u8]) -> bool { false }
     fn do_join_into<W: ZipperWriting<u64>>(&self, _wz: &mut W) -> Option<AlgebraicStatus> { None }
@@ -188,6 +198,18 @@ impl<'a, 'p> ReadSource for ReadZipperUntracked<'a, 'p, u64> {
     }
     fn make_map_val_count(&self) -> Option<usize> {
         Some(self.make_map().val_count())
+    }
+    fn get_val_probe(&self, path: &[u8]) -> (Option<u64>, Option<u64>, bool) {
+        let (g, ga) = (self.get_val().copied(), self.get_val_at(path).copied());
+        let agree = g == self.val().copied() && ga == self.val_at(path).copied();
+        (g, ga, agree)
+    }
+    fn to_next_get_val_probe(&mut self) -> Option<(bool, Option<u64>, bool)> {
+        let got = self.to_next_get_val().copied();
+        // `to_next_get_val` is specified as `to_next_val` followed by reading the
+        // value, so `Some` must mean it moved and must equal what `val` reports.
+        let agree = got == self.val().copied() || (got.is_none() && self.at_root());
+        Some((got.is_some(), got, agree))
     }
     fn do_graft<W: ZipperWriting<u64>>(&self, wz: &mut W) -> bool {
         wz.graft(self);
@@ -747,6 +769,71 @@ fn run_ops<R: ReadSource>(
                         )
                     }
                 }
+                48 => {
+                    let v = get!(d.u8()) as u64;
+                    // Writing through the reference `get_val_mut` hands back.
+                    let old = match wz.get_val_mut() {
+                        Some(slot) => {
+                            let old = *slot;
+                            *slot = v;
+                            Some(old)
+                        }
+                        None => None,
+                    };
+                    ("get_val_mut_write", show_val(old.as_ref()))
+                }
+                49 => {
+                    let v = get!(d.u8()) as u64;
+                    let r = *wz.get_val_or_set_mut(v);
+                    ("get_val_or_set_mut", show_val(Some(&r)))
+                }
+                50 => {
+                    let v = get!(d.u8()) as u64;
+                    // `ran` records whether the closure was invoked; the contract
+                    // is that it supplies the value only when none exists.
+                    let mut ran = false;
+                    let r = *wz.get_val_or_set_mut_with(|| {
+                        ran = true;
+                        v
+                    });
+                    (
+                        "get_val_or_set_mut_with",
+                        format!("{}:{}", show_val(Some(&r)), show_bool(ran)),
+                    )
+                }
+                51 => {
+                    let t = get!(d.modn(2));
+                    let p = get!(d.path(6));
+                    // `get_val`/`get_val_at` must agree with `val`/`val_at`; they
+                    // differ only in the lifetime of the reference returned.
+                    let (g, ga, agree) = if t == 0 {
+                        let (g, ga) = (wz.val().copied(), wz.val_at(&p).copied());
+                        (g, ga, true) // a write zipper has no ZipperReadOnlyValues
+                    } else {
+                        rz.get_val_probe(&p)
+                    };
+                    (
+                        "get_val_agrees",
+                        format!(
+                            "{}:{}:{}",
+                            show_val(g.as_ref()),
+                            show_val(ga.as_ref()),
+                            show_bool(agree)
+                        ),
+                    )
+                }
+                52 => match rz.to_next_get_val_probe() {
+                    Some((moved, v, agree)) => (
+                        "to_next_get_val",
+                        format!(
+                            "{}:{}:{}",
+                            show_bool(moved),
+                            show_val(v.as_ref()),
+                            show_bool(agree)
+                        ),
+                    ),
+                    None => ("to_next_get_val", "skip".to_string()),
+                },
                 47 => {
                     let t = get!(d.modn(2));
                     // The blind-zipper addition: `descend_until` reporting the

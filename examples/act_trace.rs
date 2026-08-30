@@ -41,6 +41,17 @@ impl<'t, S: AsRef<[u8]>> ReadSource for ACTZipper<'t, S, u64> {
     fn make_map_val_count(&self) -> Option<usize> {
         None
     }
+    /// ACT does implement `ZipperReadOnlyValues`, so this probe applies.
+    fn get_val_probe(&self, path: &[u8]) -> (Option<u64>, Option<u64>, bool) {
+        let (g, ga) = (self.get_val().copied(), self.get_val_at(path).copied());
+        let agree = g == self.val().copied() && ga == self.val_at(path).copied();
+        (g, ga, agree)
+    }
+    /// ACT does *not* implement `ZipperReadOnlyIteration`, so this one is
+    /// unavailable and the harness emits `skip`.
+    fn to_next_get_val_probe(&mut self) -> Option<(bool, Option<u64>, bool)> {
+        None
+    }
     // The merge operations keep the trait defaults: `None` / `false`, rendered
     // as `skip`.  See the `ReadSource` docs for why ACT cannot serve them.
 }
