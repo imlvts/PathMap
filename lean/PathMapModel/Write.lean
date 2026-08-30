@@ -107,7 +107,7 @@ Pruning only happens when a value was actually removed: `remove_val` returns
 early on the `None` branch, so `remove_val(true)` at a location with no value
 leaves any dangling path in place. -/
 def removeVal (prune : Bool) : Option V × Zip V :=
-  match z.contents with
+  match z.entry with
   -- Nothing to remove.  Note the `prune` flag does not fire here: `remove_val`
   -- returns early on this branch, so a dangling path is left in place.
   | .absent | .bare => (none, z)
@@ -124,7 +124,7 @@ A zipper rooted at `ab` whose root does not yet exist will happily create it. -/
 def createPath : Bool × Zip V :=
   if z.focus.isEmpty then (false, z)
   else
-    match z.contents with
+    match z.entry with
     | .absent => (true, z.withTrie (z.trie.addPath z.focus))
     -- Already there, with or without a value: nothing to create, and in
     -- particular an existing value is never disturbed.
@@ -208,7 +208,7 @@ def graftChildMaps (maps : List (ByteMask × Trie V)) (removeUnset : Bool) : Zip
 /-- `ZipperWriting::take_map`: remove the subtrie at the focus (value included)
 and return it as a `PathMap`.  Returns `none` when there was nothing to take. -/
 def takeMap (prune : Bool) : Option (Trie V) × Zip V :=
-  let rv := z.contents.val
+  let rv := z.entry.val
   let z1 := z.withTrie (z.trie.removeVal z.focus).2
   let z2 := if prune then (z1.prunePath).2 else z1
   let below := z2.focusNode
@@ -301,7 +301,7 @@ def joinMapInto (m : Trie V) : AlgStatus × Zip V :=
     -- `self.get_focus().is_none()` (does a node exist at all?), not
     -- `node_is_empty()`.  So a *bare* focus reports `Identity` here, where
     -- `join_into` on the same state reports `None`.
-    (match z1.contents with
+    (match z1.entry with
      | .bare | .valued _ => AlgStatus.identity
      | .absent => AlgStatus.none, z1)
   else
