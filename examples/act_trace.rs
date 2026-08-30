@@ -56,23 +56,23 @@ impl<'t, S: AsRef<[u8]>> ReadSource for ACTZipper<'t, S, u64> {
     // as `skip`.  See the `ReadSource` docs for why ACT cannot serve them.
 }
 
-fn run_act(bytes: &[u8], check: bool) -> Vec<String> {
+fn run_act(bytes: &[u8], check: bool) -> String {
     let mut d = Dec { bytes, pos: 0 };
     let (mut map0, map1, root0, root1) = match decode_header(&mut d) {
         Some(x) => x,
-        None => return vec!["EMPTY".to_string()],
+        None => return "EMPTY\n".to_string(),
     };
     let act = ArenaCompactTree::from_zipper(map1.read_zipper(), |&v| v);
-    let mut out: Vec<String> = Vec::new();
+    let mut out = String::new();
     {
         let mut rz = act.read_zipper_at_path_u64(&root1);
         run_ops(&mut d, &mut out, &mut map0, &root0, &mut rz, &root1, check);
     }
-    out.push(format!("MAP0 {}", dump(&mut map0.read_zipper())));
+    let _ = writeln!(out, "MAP0 {}", dump(&mut map0.read_zipper()));
     // Dumped from the ACT, not from map1, so `from_zipper` is under test too.
-    out.push(format!("MAP1 {}", dump(&mut act.read_zipper_u64())));
-    out.push(format!("ROOT0 {}", hex_path(&root0)));
-    out.push(format!("ROOT1 {}", hex_path(&root1)));
+    let _ = writeln!(out, "MAP1 {}", dump(&mut act.read_zipper_u64()));
+    let _ = writeln!(out, "ROOT0 {}", hex_path(&root0));
+    let _ = writeln!(out, "ROOT1 {}", hex_path(&root1));
     out
 }
 
@@ -94,7 +94,5 @@ fn main() {
             v
         }
     };
-    for line in run_act(&bytes, check) {
-        println!("{line}");
-    }
+    print!("{}", run_act(&bytes, check));
 }

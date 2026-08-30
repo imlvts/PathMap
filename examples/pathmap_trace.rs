@@ -32,8 +32,6 @@ fn main() {
             v
         }
     };
-    for line in run(&bytes, check) {
-        println!("{line}");
-    }
+    print!("{}", run(&bytes, check));
 }
 

@@ -68,7 +68,7 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
 /// plumbing, which is why the reference model may share it without breaking its
 /// rule against sharing code with the crate.
 #[allow(dead_code)]
-fn serve(flag: bool, runner: fn(&[u8], bool) -> Vec<String>) {
+fn serve(flag: bool, runner: fn(&[u8], bool) -> String) {
     use std::io::{BufRead, Write};
     use std::sync::mpsc;
     use std::time::Duration;
@@ -116,10 +116,10 @@ fn serve(flag: bool, runner: fn(&[u8], bool) -> Vec<String>) {
                             let _ = tx.send(r);
                         });
                         match rx.recv_timeout(Duration::from_millis(ms)) {
-                            Ok(Ok(lines)) => {
-                                for l in lines {
-                                    let _ = writeln!(out, "{l}");
-                                }
+                            Ok(Ok(trace)) => {
+                                // The runner hands back the whole trace in one
+                                // buffer, newline-terminated already.
+                                let _ = out.write_all(trace.as_bytes());
                                 "!DONE".to_string()
                             }
                             Ok(Err(msg)) => format!("!PANIC {}", escape_line(&msg)),
