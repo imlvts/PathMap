@@ -73,12 +73,12 @@ def showVal : Option V → String
   | some v => toString v.toNat
 
 /-- One location of a dump: its path and its value. -/
-def showEntry (t : Trie V) (root : Path) (q : Path) : String :=
+def showEntry (t : PathMap V) (root : Path) (q : Path) : String :=
   hexPath q ++ ":" ++ showVal (t.valAt (root ++ q))
 
 /-- All locations at and below `root`, depth-first, capped so a runaway trie
 cannot make the trace unbounded. -/
-def dumpAt (t : Trie V) (root : Path) : String :=
+def dumpAt (t : PathMap V) (root : Path) : String :=
   let qs := (t.subtrie root).paths.take 64
   String.intercalate "," (qs.map (showEntry t root))
 
@@ -429,7 +429,7 @@ def step (s : St) (d : Dec) : Option (St × Dec) := do
              let leaky := s.wz.focusNodeIsEmpty && s.wz.val.isNone
              let (m, z) := s.wz.takeMap noPrune
              if leaky then
-               some (emit { s with wz := (z.graftMap (m.getD Trie.empty)) }
+               some (emit { s with wz := (z.graftMap (m.getD PathMap.empty)) }
                  "take_map_restore" "?", d)
              else
              match m with
@@ -523,7 +523,7 @@ def loop : Nat → St → Dec → St
 /-! ## Header -/
 
 /-- Decode `n` seed entries and insert them into `t`. -/
-def seed (t : Trie V) (d : Dec) : Nat → Option (Trie V × Dec)
+def seed (t : PathMap V) (d : Dec) : Nat → Option (PathMap V × Dec)
   | 0 => some (t, d)
   | n + 1 => do
       let (p, d) ← d.path
@@ -533,9 +533,9 @@ def seed (t : Trie V) (d : Dec) : Nat → Option (Trie V × Dec)
 /-- Decode the header: two seeded maps and the two zipper roots. -/
 def header (d : Dec) (act : Bool) : Option (St × Dec) := do
   let (n0, d) ← d.mod 8
-  let (m0, d) ← seed Trie.empty d n0
+  let (m0, d) ← seed PathMap.empty d n0
   let (n1, d) ← d.mod 8
-  let (m1, d) ← seed Trie.empty d n1
+  let (m1, d) ← seed PathMap.empty d n1
   let (r0, d) ← d.path 4
   let (r1, d) ← d.path 4
   -- Both zipper roots are created if absent.  A zipper whose *root* does not

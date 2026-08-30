@@ -19,12 +19,12 @@ namespace Check
 
 open Laws
 
-abbrev T := Trie UInt64
+abbrev T := PathMap UInt64
 def ops : ValOps UInt64 := u64Ops
 
 /-! Build a trie from a list of path/value pairs. -/
 def mk (entries : List (Path × Nat)) : T :=
-  entries.foldl (fun t kv => (t.setVal kv.1 (UInt64.ofNat kv.2)).2) Trie.empty
+  entries.foldl (fun t kv => (t.setVal kv.1 (UInt64.ofNat kv.2)).2) PathMap.empty
 
 def zipAt (t : T) (root path : Path) : Zip UInt64 := { trie := t, root, path }
 
@@ -37,7 +37,7 @@ def fRun : T := mk [([0,0,0,0], 7)]
 /-- Overlapping prefixes without a root value. -/
 def fSide : T := mk [([0,0], 9), ([0,2], 8), ([2], 7)]
 /-- The empty trie. -/
-def fEmpty : T := Trie.empty
+def fEmpty : T := PathMap.empty
 /-- A dangling path: `[0,1,2]` exists but carries no value. -/
 def fDangle : T := (mk [([0], 5)]).addPath [0,1,2]
 /-- Two values under a shared 2-byte prefix, plus a deeper third. -/
@@ -152,13 +152,13 @@ def dropT1Result : T := ((zipAt dropT1 [0x31,0x32,0x33,0x3a] []).joinKPathInto o
 
 /-! ## Naive oracles
 
-`Trie.join` / `meet` / `sub` are defined in terms of `ValOps`, which was
+`PathMap.join` / `meet` / `sub` are defined in terms of `ValOps`, which was
 transcribed from `src/ring.rs` -- so a defect in the crate's `Option<V>` lattice
 impls could have been copied into the model, after which the differential would
 agree and report nothing.
 
 These oracles are written from set theory instead: they say which *keys* survive
-without consulting `ValOps`, `Trie`, or anything else the model shares with the
+without consulting `ValOps`, `PathMap`, or anything else the model shares with the
 crate.  They are deliberately naive and quadratic.  Where they and the real
 definitions agree, the shared-derivation risk is excluded for that operation.
 
@@ -182,11 +182,11 @@ def subKeysOracle (a b : T) : List Path :=
     | none => some kv.1
 
 #guard fixtures.all (fun a => fixtures.all (fun b =>
-  (Trie.join ops a b).vals.map (·.1) == joinKeysOracle a b))
+  (PathMap.join ops a b).vals.map (·.1) == joinKeysOracle a b))
 #guard fixtures.all (fun a => fixtures.all (fun b =>
-  (Trie.meet ops a b).vals.map (·.1) == meetKeysOracle a b))
+  (PathMap.meet ops a b).vals.map (·.1) == meetKeysOracle a b))
 #guard fixtures.all (fun a => fixtures.all (fun b =>
-  (Trie.sub ops a b).vals.map (·.1) == subKeysOracle a b))
+  (PathMap.sub ops a b).vals.map (·.1) == subKeysOracle a b))
 
 /-- `restrict` against the `BTreeSet` oracle from
 `tests/pathmap_algebra_differential.rs`: a path of `a` survives when some prefix

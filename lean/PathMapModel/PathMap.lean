@@ -1,30 +1,54 @@
 import PathMapModel.Basic
 
 /-!
-# The trie / `PathMap` model
+# What a `pathmap` trie means
+
+## This is not a trie, and that is the point
+
+A trie is a specific data structure — a prefix tree, with nodes and children,
+which `pathmap` implements with four different node types and a great deal of
+care.  The model here is a flat list of `(path, value?)` pairs.  It is not a
+prefix tree and does not try to be.
+
+That is deliberate.  This is a *specification*, and what it specifies is the
+meaning a trie carries, not the trie.  A model shaped like the implementation
+would inherit the implementation's structure, and then a bug in how that
+structure is handled — a node type promoted wrongly, a child index off by one,
+an empty node where a real one was expected — could be present in both and
+cancel out.  Findings 14, 15 and 16 are all bugs of exactly that kind, and they
+are visible only because the model has no nodes to get wrong.
+
+So the model records what the API can observe and nothing else.  The cost is
+efficiency: several operations here are quadratic where the crate is constant
+time.  That is the intended trade.
 
 ## Representation
 
 `pathmap` tries are radix-256 tries in which a location can exist *without*
 carrying a value: `create_path` makes such a **dangling path**, and
-`remove_val(false)` leaves one behind.  Consequently the observable state of a
-trie is **two** finite objects, not one:
+`remove_val(false)` leaves one behind.  So a location, and a value at that
+location, are separate facts, and both are recorded:
 
-* `vals`  — the finite partial map from paths to values, and
-* `paths` — the finite, prefix-closed set of locations that "exist", i.e. the
-            set on which `Zipper::path_exists` returns `true`.
+* `entries` — every location that exists, in depth-first order, each carrying
+  its value if it has one.
 
-`Trie` stores exactly those two components in canonical form (sorted, duplicate
-free, `paths` prefix-closed and containing every key of `vals`).  Because the
-form is canonical, structural equality of `Trie`s *is* observational equality —
-which is what lets the model decide `AlgebraicStatus::Identity` vs `Element`.
+One list rather than a value map beside a set of paths, so that a value cannot
+be recorded at a location that does not exist.  The list is canonical — sorted,
+duplicate-free, prefix-closed, containing `[]` — so structural equality of
+`PathMap`s *is* observational equality, which is what lets the model decide
+`AlgebraicStatus::Identity` vs `Element`.
 
-A `pathmap::PathMap` is a `Trie` including the value at the empty path (its
-*root value*).  A `pathmap` **node** — what `get_focus` returns and what
-`graft_internal` replaces — is everything *strictly below* a location; the
-value at the location itself lives in the parent's cell.  The model keeps that
-distinction explicit: `Trie.subtrie` includes the focus value, `Trie.below`
-does not, and `Trie.graftBelow` only ever rewrites the strictly-below part.
+The type is named for `pathmap::PathMap`, the crate's own name for the thing a
+trie implements, and `PathMap.subtrie` returns one just as `make_map` does.
+
+## Nodes
+
+A `pathmap` **node** — what `get_focus` returns and what `graft_internal`
+replaces — is everything *strictly below* a location; the value at the location
+itself lives in the parent's cell.  The model has no nodes, but it does keep
+that boundary, because the API's behaviour turns on it: `PathMap.subtrie`
+includes the focus value, `Zip.focusNode` does not, and `PathMap.graftBelow`
+only ever rewrites the strictly-below part.
 -/
 
 namespace PathMapModel
@@ -32,7 +56,7 @@ namespace PathMapModel
 /-- A `pathmap` trie: a finite path→value map plus the prefix-closed set of
 existing locations.  Canonical: both fields sorted and duplicate-free, `paths`
 prefix-closed and a superset of the keys of `vals`, and `[] ∈ paths`. -/
-structure Trie (V : Type) where
+structure PathMap (V : Type) where
   /-- Every location that exists, in depth-first order, each carrying its value
   if it has one.  Canonical: sorted by path, no duplicate paths, prefix-closed,
   and containing `[]`.
@@ -47,7 +71,7 @@ structure Trie (V : Type) where
   entries : List (Path × Option V)
 deriving Repr
 
-namespace Trie
+namespace PathMap
 
 variable {V : Type}
 
@@ -56,7 +80,7 @@ variable {V : Type}
 The two halves the API observes, derived rather than stored. -/
 
 /-- Every existing location, in depth-first order. -/
-def paths (t : Trie V) : List Path := t.entries.map (·.1)
+def paths (t : PathMap V) : List Path := t.entries.map (·.1)
 
 /-! ## Canonicalisation -/
 
@@ -76,10 +100,10 @@ def insertValSorted (kv : Path × V) : List (Path × V) → List (Path × V)
 def normVals (l : List (Path × V)) : List (Path × V) :=
   (dedupVals l).foldl (fun acc kv => insertValSorted kv acc) []
 
-/-- Build a canonical `Trie` from raw (possibly unsorted, possibly non-closed)
+/-- Build a canonical `PathMap` from raw (possibly unsorted, possibly non-closed)
 components.  `paths` is completed with every prefix of every raw path and of
 every key carrying a value, so callers never have to maintain closure by hand. -/
-def mk' (vals : List (Path × V)) (paths : List Path) : Trie V :=
+def mk' (vals : List (Path × V)) (paths : List Path) : PathMap V :=
   let vs := normVals vals
   -- Every location that must exist: the root, the ones asked for, the ones
   -- carrying a value, and every prefix of those.  Each then takes whatever
@@ -89,9 +113,9 @@ def mk' (vals : List (Path × V)) (paths : List Path) : Trie V :=
   { entries := existing.map fun p => (p, vs.lookup p) }
 
 /-- The empty trie: the root exists, nothing else does. -/
-def empty : Trie V := { entries := [([], none)] }
+def empty : PathMap V := { entries := [([], none)] }
 
-instance : Inhabited (Trie V) := ⟨empty⟩
+instance : Inhabited (PathMap V) := ⟨empty⟩
 
 /-! ## Observations
 
@@ -152,7 +176,7 @@ theorem present_of_val {c : Entry V} {v : V} (h : c.val = some v) :
 end Entry
 
 /-- What the trie holds at `p`. -/
-def entryAt (t : Trie V) (p : Path) : Entry V :=
+def entryAt (t : PathMap V) (p : Path) : Entry V :=
   match t.entries.lookup p with
   | none => .absent
   | some none => .bare
@@ -163,56 +187,56 @@ def entryAt (t : Trie V) (p : Path) : Entry V :=
 Read off the existing locations rather than off `entries` directly, so that a
 pair can only appear here if the trie genuinely holds a value there — see
 `Spec.mem_vals_pathExists`. -/
-def vals (t : Trie V) : List (Path × V) :=
+def vals (t : PathMap V) : List (Path × V) :=
   t.paths.filterMap fun p => (t.entryAt p).val.map (fun v => (p, v))
 
 /-- `Zipper::val` / `PathMap::get_val_at`: the value at `p`, if any. -/
-def valAt (t : Trie V) (p : Path) : Option V := (t.entryAt p).val
+def valAt (t : PathMap V) (p : Path) : Option V := (t.entryAt p).val
 
 /-- `Zipper::path_exists`: whether `p` is a location in the trie.  True for
 dangling paths (locations with no value and no children). -/
-def pathExists (t : Trie V) (p : Path) : Bool := (t.entryAt p).present
+def pathExists (t : PathMap V) (p : Path) : Bool := (t.entryAt p).present
 
 /-- `Zipper::child_mask`: the bytes `b` for which `p ++ [b]` exists. -/
-def childMask (t : Trie V) (p : Path) : ByteMask :=
+def childMask (t : PathMap V) (p : Path) : ByteMask :=
   ByteMask.ofList <| t.paths.filterMap fun q =>
     match Path.stripPrefix p q with
     | some [b] => some b
     | _ => none
 
 /-- `Zipper::child_count`. -/
-def childCount (t : Trie V) (p : Path) : Nat := (t.childMask p).length
+def childCount (t : PathMap V) (p : Path) : Nat := (t.childMask p).length
 
 /-- `ZipperMoving::val_count`: values at and below `p`. -/
-def valCount (t : Trie V) (p : Path) : Nat :=
+def valCount (t : PathMap V) (p : Path) : Nat :=
   (t.vals.filter (fun kv => p ≼ kv.1)).length
 
 /-- The existing locations at or below `p`, in depth-first (lexicographic) order. -/
-def pathsBelow (t : Trie V) (p : Path) : List Path := t.paths.filter (fun q => p ≼ q)
+def pathsBelow (t : PathMap V) (p : Path) : List Path := t.paths.filter (fun q => p ≼ q)
 
 /-- `TrieNode::node_is_empty` applied to the node *below* `p`: no descendants at all. -/
-def belowIsEmpty (t : Trie V) (p : Path) : Bool :=
+def belowIsEmpty (t : PathMap V) (p : Path) : Bool :=
   t.paths.all (fun q => !(p ≼ q) || q == p)
 
 /-- `PathMap::is_empty`: no root value and an empty root node. -/
-def isEmptyMap (t : Trie V) : Bool := t.vals.isEmpty && t.belowIsEmpty []
+def isEmptyMap (t : PathMap V) : Bool := t.vals.isEmpty && t.belowIsEmpty []
 
 /-! ## Sub-tries and grafting -/
 
 /-- The subtrie rooted at `p`, **including** the value at `p` as its root value.
 This is `make_map` / `take_map` under the default `graft_root_vals` feature, and
 also what a zipper rooted at `p` sees.  Yields `empty` when `p` does not exist. -/
-def subtrie (t : Trie V) (p : Path) : Trie V :=
+def subtrie (t : PathMap V) (p : Path) : PathMap V :=
   mk' (t.vals.filterMap fun kv => (Path.stripPrefix p kv.1).map (·, kv.2))
       (t.paths.filterMap fun q => Path.stripPrefix p q)
 
 /-- Remove everything at and below `p` (`p` itself stops existing). -/
-def removeAt (t : Trie V) (p : Path) : Trie V :=
+def removeAt (t : PathMap V) (p : Path) : PathMap V :=
   mk' (t.vals.filter (fun kv => !(p ≼ kv.1))) (t.paths.filter (fun q => !(p ≼ q)))
 
 /-- Remove everything strictly below `p`; `p` itself, and its value, are untouched.
 This is `ZipperWriting::remove_branches` without pruning. -/
-def removeBelow (t : Trie V) (p : Path) : Trie V :=
+def removeBelow (t : PathMap V) (p : Path) : PathMap V :=
   mk' (t.vals.filter (fun kv => !(p ≼ kv.1) || kv.1 == p))
       (t.paths.filter (fun q => !(p ≼ q) || q == p))
 
@@ -221,7 +245,7 @@ def removeBelow (t : Trie V) (p : Path) : Trie V :=
 The value at `p` is *not* touched (`graft_internal` only ever replaces a node);
 `p` is created iff `s` has any non-root content, mirroring the fact that
 grafting an empty node neither creates nor destroys the location. -/
-def graftBelow (t : Trie V) (p : Path) (s : Trie V) : Trie V :=
+def graftBelow (t : PathMap V) (p : Path) (s : PathMap V) : PathMap V :=
   let cleared := t.removeBelow p
   mk' (cleared.vals ++ s.vals.filterMap
         (fun kv => if kv.1 == ([] : Path) then none else some (p ++ kv.1, kv.2)))
@@ -232,16 +256,16 @@ def graftBelow (t : Trie V) (p : Path) (s : Trie V) : Trie V :=
 
 /-- `ZipperWriting::set_val` / `PathMap::set_val_at`.  Creates `p` if needed.
 Returns the replaced value. -/
-def setVal (t : Trie V) (p : Path) (v : V) : Option V × Trie V :=
+def setVal (t : PathMap V) (p : Path) (v : V) : Option V × PathMap V :=
   (t.valAt p, mk' ((p, v) :: t.vals.filter (fun kv => !(kv.1 == p))) t.paths)
 
 /-- `ZipperWriting::remove_val` *without* pruning: the location survives as a
 dangling path.  Returns the removed value. -/
-def removeVal (t : Trie V) (p : Path) : Option V × Trie V :=
+def removeVal (t : PathMap V) (p : Path) : Option V × PathMap V :=
   (t.valAt p, mk' (t.vals.filter (fun kv => !(kv.1 == p))) t.paths)
 
 /-- `ZipperWriting::create_path`: make `p` exist as a dangling path. -/
-def addPath (t : Trie V) (p : Path) : Trie V := mk' t.vals (p :: t.paths)
+def addPath (t : PathMap V) (p : Path) : PathMap V := mk' t.vals (p :: t.paths)
 
 /-! ## Pruning
 
@@ -251,14 +275,14 @@ zipper's root.  It is a no-op unless the focus is a *dangling tip*: it exists,
 has no value, and has no children. -/
 
 /-- Is `p` a dangling tip — an existing location with neither value nor children? -/
-def isDanglingTip (t : Trie V) (p : Path) : Bool :=
+def isDanglingTip (t : PathMap V) (p : Path) : Bool :=
   match t.entryAt p with
   | .bare => t.belowIsEmpty p
   | .absent | .valued _ => false
 
 /-- The number of bytes `prune_path` would remove at focus `p` for a zipper whose
 root sits at depth `rootLen`.  `0` means "nothing to prune". -/
-def pruneCount (t : Trie V) (rootLen : Nat) (p : Path) : Nat :=
+def pruneCount (t : PathMap V) (rootLen : Nat) (p : Path) : Nat :=
   if p.length ≤ rootLen then 0
   else if !t.isDanglingTip p then 0
   else
@@ -278,7 +302,7 @@ def pruneCount (t : Trie V) (rootLen : Nat) (p : Path) : Nat :=
 
 /-- `ZipperWriting::prune_path`: returns the number of bytes removed and the
 pruned trie. -/
-def prunePath (t : Trie V) (rootLen : Nat) (p : Path) : Nat × Trie V :=
+def prunePath (t : PathMap V) (rootLen : Nat) (p : Path) : Nat × PathMap V :=
   let n := t.pruneCount rootLen p
   if n == 0 then (0, t) else (n, t.removeAt (p.take (p.length - n + 1)))
 
@@ -309,14 +333,14 @@ def subVal : Option V → Option V → Option V
 
 /-- Join (union).  Every location of either side survives; colliding values are
 combined with `ValOps.join`. -/
-def join (a b : Trie V) : Trie V :=
+def join (a b : PathMap V) : PathMap V :=
   let keys := Path.sortDedup (a.vals.map (·.1) ++ b.vals.map (·.1))
   mk' (keys.filterMap fun k => (joinVal ops (a.valAt k) (b.valAt k)).map (k, ·))
       (a.paths ++ b.paths)
 
 /-- Meet (intersection).  A location survives only if it lies on the way to a
 surviving value, so dangling paths never survive a meet. -/
-def meet (a b : Trie V) : Trie V :=
+def meet (a b : PathMap V) : PathMap V :=
   let keys := Path.sortDedup (a.vals.map (·.1))
   mk' (keys.filterMap fun k => (meetVal ops (a.valAt k) (b.valAt k)).map (k, ·)) []
 
@@ -327,7 +351,7 @@ verbatim — *including its dangling paths*.  Where `b` does have a node, only
 locations leading to a surviving value are kept.  `pathmap` gets this from
 `psubtract_dyn` short-circuiting on absent children; the model reproduces it by
 splitting on whether the location leaves `b.paths`. -/
-def sub (a b : Trie V) : Trie V :=
+def sub (a b : PathMap V) : PathMap V :=
   let survivingVals : List (Path × V) :=
     a.vals.filterMap fun kv => (subVal ops (some kv.2) (b.valAt kv.1)).map (kv.1, ·)
   let keys := survivingVals.map (·.1)
@@ -343,19 +367,19 @@ This is the node-level reading of `prestrict`: a node has no root value, so the
 empty prefix never validates.  `PathMap::restrict` adds the empty prefix back in
 (see `Map.restrict`), which is why the map-level and zipper-level operations
 disagree when the source has a root value. -/
-def validatedBy (b : Trie V) (q : Path) : Bool :=
+def validatedBy (b : PathMap V) (q : Path) : Bool :=
   (List.range q.length).any fun i => (b.valAt (q.take (i + 1))).isSome
 
 /-- `prestrict` at node level: keep the locations of `a` validated by `b`.
 Once a location is validated, everything below it is kept verbatim. -/
-def restrictBelowRoot (a b : Trie V) : Trie V :=
+def restrictBelowRoot (a b : PathMap V) : PathMap V :=
   mk' (a.vals.filter (fun kv => validatedBy b kv.1))
       (a.paths.filter (fun q => validatedBy b q))
 
 /-- Structural (hence observational) equality of tries.  Used to decide
 `AlgebraicStatus::Identity` — `pathmap` reports `Identity(SELF_IDENT)` exactly
 when the operation's output equals `self`. -/
-def beqT (ops : ValOps V) (a b : Trie V) : Bool :=
+def beqT (ops : ValOps V) (a b : PathMap V) : Bool :=
   a.entries.length == b.entries.length &&
   (a.entries.zip b.entries).all fun xy =>
     xy.1.1 == xy.2.1 &&
@@ -367,12 +391,12 @@ def beqT (ops : ValOps V) (a b : Trie V) : Bool :=
 /-! ## Path surgery -/
 
 /-- `ZipperWriting::insert_prefix`: put `k` in front of every path below the root. -/
-def insertPrefixBelow (t : Trie V) (k : Path) : Trie V :=
+def insertPrefixBelow (t : PathMap V) (k : Path) : PathMap V :=
   mk' (t.vals.filterMap fun kv => if kv.1 == ([] : Path) then none else some (k ++ kv.1, kv.2))
       (t.paths.filterMap fun q => if q == ([] : Path) then none else some (k ++ q))
 
 /-- The existing locations exactly `k` bytes below the root, in depth-first order. -/
-def kPaths (t : Trie V) (k : Nat) : List Path := t.paths.filter (fun q => q.length == k)
+def kPaths (t : PathMap V) (k : Nat) : List Path := t.paths.filter (fun q => q.length == k)
 
 /-- `drop_head` / `ZipperWriting::join_k_path_into` at node level: strip the first
 `k` bytes from every path and join the results.
@@ -381,9 +405,9 @@ Values sitting at depth *exactly* `k` are **discarded** — the joined node has
 nowhere to put a root value.  (`meet_k_path_into` keeps them, because it routes
 through `take_map`/`graft_map`, which do carry root values.  The asymmetry is
 real; see `Spec.lean`.) -/
-def dropHead (t : Trie V) (k : Nat) : Trie V :=
+def dropHead (t : PathMap V) (k : Nat) : PathMap V :=
   if k == 0 then t
   else (t.kPaths k).foldl (fun acc q => join ops acc ((t.subtrie q).removeVal []).2) empty
 
-end Trie
+end PathMap
 end PathMapModel

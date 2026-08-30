@@ -3,7 +3,7 @@ import PathMapModel.Map
 /-!
 # Specification
 
-The definitions in `Trie.lean`, `Zipper.lean`, `Write.lean` and `Map.lean` *are*
+The definitions in `PathMap.lean`, `Zipper.lean`, `Write.lean` and `Map.lean` *are*
 the formal semantics: each is a total, executable function whose docstring names
 the `pathmap` item it specifies.  This module adds the two things a bare
 definition does not give you.
@@ -147,7 +147,7 @@ theorem isPrefixOf_append (p q : Path) : p ≼ (p ++ q) := by
 
 end Path
 
-namespace Trie
+namespace PathMap
 
 /-- Every location carrying a value exists.
 
@@ -156,7 +156,7 @@ allowed a value to be recorded at a path that was not listed as existing, and
 the constructors had to be trusted to keep the two in step.  With one list of
 `(path, Option value)` the property is structural, so it is a theorem instead:
 `vals` reads off a sublist of `entries`, and `paths` reads off all of them. -/
-theorem mem_vals_pathExists {V : Type} (t : Trie V) (kv : Path × V)
+theorem mem_vals_pathExists {V : Type} (t : PathMap V) (kv : Path × V)
     (h : kv ∈ t.vals) : t.pathExists kv.1 = true := by
   simp only [vals, List.mem_filterMap] at h
   obtain ⟨p, _, hmap⟩ := h
@@ -168,7 +168,7 @@ theorem mem_vals_pathExists {V : Type} (t : Trie V) (kv : Path × V)
 
 /-- Pruning can never remove more bytes than separate the focus from the
 zipper's root: `prune_path` cannot prune above the root. -/
-theorem pruneCount_le {V : Type} (t : Trie V) (rootLen : Nat) (p : Path) :
+theorem pruneCount_le {V : Type} (t : PathMap V) (rootLen : Nat) (p : Path) :
     t.pruneCount rootLen p ≤ p.length - rootLen := by
   unfold pruneCount
   split
@@ -177,7 +177,7 @@ theorem pruneCount_le {V : Type} (t : Trie V) (rootLen : Nat) (p : Path) :
     · omega
     · exact Nat.sub_le_sub_left (Nat.le_max_left _ _) _
 
-end Trie
+end PathMap
 
 /-! ## §2 Checkable laws
 
@@ -191,17 +191,17 @@ variable {V : Type}
 /-- Every location carrying a value exists.
 
 Kept as a runtime check only to guard the *fixtures*: it is now structurally
-true of any `Trie` (see `Trie.mem_vals_pathExists`), so a failure here would
+true of any `PathMap` (see `PathMap.mem_vals_pathExists`), so a failure here would
 mean a fixture was built by hand rather than through the constructors. -/
-def valsExist (t : Trie V) : Bool :=
+def valsExist (t : PathMap V) : Bool :=
   t.vals.all (fun kv => t.pathExists kv.1)
 
 /-- The set of existing locations is closed under taking prefixes. -/
-def prefixClosed (t : Trie V) : Bool :=
+def prefixClosed (t : PathMap V) : Bool :=
   t.paths.all (fun q => (Path.prefixes q).all (fun r => t.pathExists r))
 
 /-- `child_mask` lists exactly the bytes whose child location exists. -/
-def childMaskAgrees (t : Trie V) (p : Path) : Bool :=
+def childMaskAgrees (t : PathMap V) (p : Path) : Bool :=
   (t.childMask p).all (fun b => t.pathExists (p ++ [b])) &&
   t.paths.all (fun q =>
     match Path.stripPrefix p q with
@@ -209,7 +209,7 @@ def childMaskAgrees (t : Trie V) (p : Path) : Bool :=
     | _ => true)
 
 /-- `val_count` at the root counts exactly the entries of `iter`. -/
-def valCountAgrees (t : Trie V) : Bool := t.valCount [] == t.vals.length
+def valCountAgrees (t : PathMap V) : Bool := t.valCount [] == t.vals.length
 
 /-- After `set_val` the focus is a location carrying exactly that value.
 
@@ -240,7 +240,7 @@ def createThenPrune (ops : ValOps V) (z : Zip V) : Bool :=
   else
     let (_, z1) := z.createPath
     let (_, z2) := z1.prunePath
-    Trie.beqT ops z2.trie z.trie
+    PathMap.beqT ops z2.trie z.trie
 
 /-- `descend_to_existing` always lands on an existing location, provided the
 focus existed when it was called. -/
@@ -302,43 +302,43 @@ maps that disagree at a key keeps whichever value belongs to the receiver, and
 `a.join(b)` and `b.join(a)` differ.  The *set of paths* is still symmetric, and
 that is what this law asserts.  Any test that assumes value-level commutativity
 is asserting something the crate does not promise for these value types. -/
-def joinCommOnPaths (ops : ValOps V) (a b : Trie V) : Bool :=
-  (Trie.join ops a b).paths == (Trie.join ops b a).paths &&
-  (Trie.join ops a b).vals.map (·.1) == (Trie.join ops b a).vals.map (·.1)
+def joinCommOnPaths (ops : ValOps V) (a b : PathMap V) : Bool :=
+  (PathMap.join ops a b).paths == (PathMap.join ops b a).paths &&
+  (PathMap.join ops a b).vals.map (·.1) == (PathMap.join ops b a).vals.map (·.1)
 
 /-- `join` is idempotent. -/
-def joinIdem (ops : ValOps V) (a : Trie V) : Bool :=
-  Trie.beqT ops (Trie.join ops a a) a
+def joinIdem (ops : ValOps V) (a : PathMap V) : Bool :=
+  PathMap.beqT ops (PathMap.join ops a a) a
 
 /-- `join` is associative, values included: left-biasing is itself associative. -/
-def joinAssoc (ops : ValOps V) (a b c : Trie V) : Bool :=
-  Trie.beqT ops (Trie.join ops (Trie.join ops a b) c) (Trie.join ops a (Trie.join ops b c))
+def joinAssoc (ops : ValOps V) (a b c : PathMap V) : Bool :=
+  PathMap.beqT ops (PathMap.join ops (PathMap.join ops a b) c) (PathMap.join ops a (PathMap.join ops b c))
 
 /-- `meet` is idempotent *on values*.  It is not idempotent on locations: a meet
 discards dangling paths, so `meet a a` keeps only the value-bearing skeleton. -/
-def meetIdemOnVals (ops : ValOps V) (a : Trie V) : Bool :=
-  (Trie.meet ops a a).vals.map (·.1) == a.vals.map (·.1)
+def meetIdemOnVals (ops : ValOps V) (a : PathMap V) : Bool :=
+  (PathMap.meet ops a a).vals.map (·.1) == a.vals.map (·.1)
 
 /-- Subtracting a map from itself leaves no values. -/
-def subSelfEmptyVals (ops : ValOps V) (a : Trie V) : Bool :=
-  (Trie.sub ops a a).vals.isEmpty
+def subSelfEmptyVals (ops : ValOps V) (a : PathMap V) : Bool :=
+  (PathMap.sub ops a a).vals.isEmpty
 
 /-- `restrict a a = a`: every path of `a` is validated by the value at its own
 end (or by the root value).  This is the law that caught a real `prestrict`
 bug — see `tests/pathmap_algebra_differential.rs`. -/
-def restrictSelf (ops : ValOps V) (a : Trie V) : Bool :=
-  Trie.beqT ops (Map.restrict a a) a
+def restrictSelf (ops : ValOps V) (a : PathMap V) : Bool :=
+  PathMap.beqT ops (Map.restrict a a) a
 
 /-- `take_map` followed by `graft_map` restores the trie exactly. -/
 def takeThenGraft (ops : ValOps V) (z : Zip V) : Bool :=
   let (m, z1) := z.takeMap false
-  let z2 := z1.graftMap (m.getD Trie.empty)
-  Trie.beqT ops z2.trie z.trie
+  let z2 := z1.graftMap (m.getD PathMap.empty)
+  PathMap.beqT ops z2.trie z.trie
 
 /-- Grafting one subtrie into two places makes two *independent* copies:
 writing under one leaves the other exactly as it was.
 
-In the model this cannot fail — a `Trie` is a flat list of entries, so the two
+In the model this cannot fail — a `PathMap` is a flat list of entries, so the two
 copies are separate elements and there is no aliasing to leak through.  The law
 is stated anyway for two reasons: it is what the crate must do (`graft` clones a
 refcounted pointer, so the copies really are shared until copy-on-write
@@ -346,18 +346,18 @@ separates them), and it would catch a model that grew sharing of its own.
 
 See FINDINGS.md #16: the crate gets this right where it completes, but aborts
 when the shared subtrie contains a dangling path. -/
-def graftedCopiesIndependent (ops : ValOps V) (s : Trie V)
+def graftedCopiesIndependent (ops : ValOps V) (s : PathMap V)
     (a b k : Path) (v : V) : Bool :=
-  let at_ := fun (t : Trie V) (p : Path) => ({ trie := t, root := [], path := p } : Zip V)
-  let one := ((at_ Trie.empty a).graftMap s).trie
+  let at_ := fun (t : PathMap V) (p : Path) => ({ trie := t, root := [], path := p } : Zip V)
+  let one := ((at_ PathMap.empty a).graftMap s).trie
   let both := ((at_ one b).graftMap s).trie
   let after := (((at_ both (a ++ k)).setVal v).2).trie
-  Trie.beqT ops (both.subtrie b) (after.subtrie b)
+  PathMap.beqT ops (both.subtrie b) (after.subtrie b)
 
 /-- `graft` copies the source subtrie: after grafting, `make_map` at the
 destination equals `make_map` at the source. -/
 def graftThenMakeMap (ops : ValOps V) (dst src : Zip V) : Bool :=
-  Trie.beqT ops (dst.graft src).makeMap src.makeMap
+  PathMap.beqT ops (dst.graft src).makeMap src.makeMap
 
 /-- `drop_head k` undoes `insert_prefix` of a `k`-byte prefix, as documented on
 `ZipperWriting::insert_prefix`.
@@ -370,20 +370,20 @@ def dropHeadUndoesInsertPrefix (ops : ValOps V) (z : Zip V) (pre : Path) : Bool 
   else
     let (_, z1) := z.insertPrefix pre
     let (_, z2) := z1.joinKPathInto ops pre.length false
-    Trie.beqT ops z2.focusNode z.focusNode
+    PathMap.beqT ops z2.focusNode z.focusNode
 
 /-- `join_into` with an empty source is a no-op and reports `Identity`
 (or `None` when the destination is empty too). -/
 def joinEmptyIdentity (ops : ValOps V) (z : Zip V) : Bool :=
-  let src : Zip V := { trie := Trie.empty, root := [], path := [] }
+  let src : Zip V := { trie := PathMap.empty, root := [], path := [] }
   let (st, z') := z.joinInto ops src
-  Trie.beqT ops z'.trie z.trie &&
+  PathMap.beqT ops z'.trie z.trie &&
     (st == (if z.focusNodeIsEmpty then AlgStatus.none else AlgStatus.identity))
 
 /-- Joining a zipper into itself is the identity, and reports it. -/
 def joinSelfIdentity (ops : ValOps V) (z : Zip V) : Bool :=
   let (st, z') := z.joinInto ops z
-  Trie.beqT ops z'.trie z.trie &&
+  PathMap.beqT ops z'.trie z.trie &&
     (st == (if z.focusNodeIsEmpty then AlgStatus.none else AlgStatus.identity))
 
 /-- `remove_branches` empties the focus but preserves its value. -/
@@ -398,11 +398,11 @@ def removeBranchesKeepsVal (ops : ValOps V) (z : Zip V) : Bool :=
 /-- `remove_unmasked_branches` with a full mask changes nothing. -/
 def removeUnmaskedFullMask (ops : ValOps V) (z : Zip V) : Bool :=
   let full := ByteMask.ofList ((List.range 256).map (fun i => UInt8.ofNat i))
-  Trie.beqT ops (z.removeUnmaskedBranches full false).trie z.trie
+  PathMap.beqT ops (z.removeUnmaskedBranches full false).trie z.trie
 
 /-- `remove_unmasked_branches` with an empty mask equals `remove_branches`. -/
 def removeUnmaskedEmptyMask (ops : ValOps V) (z : Zip V) : Bool :=
-  Trie.beqT ops (z.removeUnmaskedBranches [] false).trie (z.removeBranches false).2.trie
+  PathMap.beqT ops (z.removeUnmaskedBranches [] false).trie (z.removeBranches false).2.trie
 
 end Laws
 end PathMapModel
