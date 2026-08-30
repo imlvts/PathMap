@@ -146,6 +146,13 @@ required-features = ["arena_compact", "serialization"]
 members = ["pathmap-derive", "examples/sampling", "examples/arena_compact_tests"]
 resolver = "2"
 
+# The Rust reference model (examples/reference/) and its differential trace
+# front end; see lean/README.md.  `test = true` so its ported `Check.lean`
+# guards and randomised law sweep run under `cargo test`.
+[[example]]
+name = "reference"
+test = true
+
 # Differential trace with an ArenaCompactTree read source; see lean/README.md.
 [[example]]
 name = "act_trace"
