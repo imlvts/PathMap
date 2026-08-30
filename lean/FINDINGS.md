@@ -502,6 +502,61 @@ wz.graft_child_maps(mask, vec![PathMap::new(); 3], true);
 Grafting nothing should neither create nor destroy a location, which is the rule
 `graft` itself follows.
 
+## 16. Structural sharing breaks on dangling paths
+
+`cases: merkleize_dangling`, `shared_dangling_cow` — **abort**
+
+Found by `cargo run --example sharing_check`, which checks the two properties
+sharing has to preserve.  Both symptoms need a location that exists but holds no
+value — the state `create_path` produces and `remove_val(false)` leaves behind —
+to be *shared*, which is what makes them invisible to a value-semantics model
+until they abort.
+
+**`merkleize` aborts on two identical dangling subtries.**
+
+```rust
+let mut m = PathMap::<u64>::new();
+m.create_path(&[9]);
+m.create_path(&[8]);
+m.merkleize();
+// called `Option::unwrap()` on a `None` value   (line_list_node.rs,
+//   node_replace_child unwraps a child that is not there)
+```
+
+`merkleize` exists to replace identical subtries with references to one copy.
+Two dangling paths *are* identical subtries — both empty — so it tries, and the
+replacement path assumes a child that an empty node does not have.  One dangling
+path alone is fine; it takes two.
+
+**Writing into a shared subtrie that contains a dangling path aborts.**
+
+```rust
+// src holds { [1] = 63, [1,2,0] = 45 } plus a dangling [3]
+for spot in [&[0][..], &[1][..], &[2,2][..]] {
+    map.write_zipper_at_path(spot).graft(&src.read_zipper());
+}
+map.write_zipper_at_path(&[0]).descend_to(&[3,3]).set_val(999);
+// Attempted to make_unique on an empty sentinel node   (trie_node.rs)
+```
+
+`make_unique` is the copy-on-write primitive — "ensures that we hold the only
+reference to a node, by cloning it if necessary" — and it asserts the node is
+not an empty sentinel.  But `create_path` produces exactly an empty node, and
+grafting shares it, so the first write under any of those locations reaches the
+assertion.  This is the `make_unique on an empty sentinel node` panic that shows
+up 3–7 times in every 250-input differential run.
+
+**What is *not* wrong.**  Where these operations complete, they are correct:
+over 300 random shared tries, copy-on-write preserved the untouched copies in
+266 of 266 cases that ran, and `merkleize` preserved the observable trie in 214
+of 214, reusing 1464 node references.  The defect is that they abort, not that
+they compute the wrong answer.
+
+`merkleize`'s other documented purpose — that the hash it returns is a function
+of content, so equal tries hash equally regardless of how they were built —
+remains **untested**: every attempt to check it built the comparison trie with
+`create_path` and hit the first bug above.
+
 ## 13. Further arithmetic underflows reached from safe API
 
 Found by the in-process invariant run (400 random programs, release build); not
@@ -513,6 +568,7 @@ inputs:
   ~2% of random programs.  It panics rather than reading out of bounds only
   because slice indexing is checked.
 * `src/trie_node.rs:3063` — `Attempted to make_unique on an empty sentinel node`.
+  Now understood: see finding 16.
 * `src/write_zipper.rs:1413` — `called Option::unwrap() on a None value`.
 * `src/zipper.rs:2801` — `excess_key_len()` underflow, same shape as finding 10.
   Triggered by `fork_read_zipper()` on a write zipper rooted at a non-empty path

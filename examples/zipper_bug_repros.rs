@@ -46,6 +46,8 @@ const CASES: &[(&str, &str)] = &[
     ("remove_unmasked_dangling", "remove_unmasked_branches asserts inside a dangling line node"),
     ("graft_ambiguous_node", "graft corrupts the destination node when it holds a single line (PANICS)"),
     ("graft_child_maps_dense", "graft_child_maps panics whenever the destination focus is a dense node"),
+    ("merkleize_dangling", "merkleize aborts on two identical dangling subtries"),
+    ("shared_dangling_cow", "writing into a shared subtrie that holds a dangling path aborts"),
     ("meet_k_path_hang", "meet_k_path_into loops forever when the focus has no children (HANGS)"),
 ];
 
@@ -382,6 +384,53 @@ graft_masked_branches={:<5} graft_child_maps={}",
                 Ok(exists) => println!("    focus exists afterwards = {exists}   <-- expected false"),
                 Err(_) => println!("    PANIC (debug assertion !src.node_is_empty()); \
 a release build instead creates the path"),
+            }
+        }
+
+        // `merkleize` replaces identical subtries with references to one copy.
+        // Two dangling paths are identical subtries -- both empty -- and it
+        // aborts trying to share them.
+        "merkleize_dangling" => {
+            let mut m = PathMap::<u64>::new();
+            m.create_path(&[9u8]);
+            m.create_path(&[8u8]);
+            println!("  a map holding nothing but two dangling paths, [9] and [8]");
+            std::panic::set_hook(Box::new(|_| {}));
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| m.merkleize().reused));
+            let _ = std::panic::take_hook();
+            match r {
+                Ok(n) => println!("  merkleize -> reused {n}"),
+                Err(_) => println!("  merkleize -> PANIC (line_list_node.rs, node_replace_child \
+unwraps a child that is not there)"),
+            }
+            println!("  one dangling path alone is fine; it takes two identical ones.");
+        }
+
+        // `create_path` leaves an empty node.  Sharing one by grafting and then
+        // writing under it puts copy-on-write in the position of having to make
+        // an empty sentinel unique, which it asserts against.
+        "shared_dangling_cow" => {
+            let mut src = PathMap::<u64>::new();
+            src.insert(&[1u8], 63);
+            src.insert(&[1u8, 2, 0], 45);
+            src.create_path(&[3u8]);
+            println!("  source: {}   ([3] is dangling)", vals(&src));
+            let mut m = PathMap::<u64>::new();
+            for spot in [&[0u8][..], &[1u8][..], &[2u8, 2][..]] {
+                let mut wz = m.write_zipper_at_path(spot);
+                wz.graft(&src.read_zipper());
+            }
+            println!("  grafted into [0], [1] and [2,2], so the dangling node is shared");
+            std::panic::set_hook(Box::new(|_| {}));
+            let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let mut wz = m.write_zipper_at_path(&[0u8]);
+                wz.descend_to(&[3u8, 3]);
+                wz.set_val(999);
+            }));
+            let _ = std::panic::take_hook();
+            match r {
+                Ok(()) => println!("  writing under [0] -> ok"),
+                Err(_) => println!("  writing under [0] -> PANIC (make_unique on an empty sentinel node)"),
             }
         }
 
