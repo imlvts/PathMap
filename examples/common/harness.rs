@@ -169,6 +169,18 @@ trait ReadSource:
 {
     /// Depth-first dump of everything below the focus (`fork_read_zipper` + walk).
     fn dump_fork(&self) -> String;
+
+    /// Whether the zipper still satisfies its internal *regularized* invariant.
+    ///
+    /// A movement method that returns a deregularized `ReadZipper` is a defect,
+    /// but it is a silent one: nothing goes wrong until some later `descend_to`,
+    /// which asserts in a debug build and **loops forever in a release build**.
+    /// The two hangs this harness finds per 2000 inputs are that.  Checking
+    /// after every operation attributes the damage to the operation that did it
+    /// rather than to the one that tripped over it.
+    ///
+    /// Defaults to `true` for read sources that have no such invariant (ACT).
+    fn regularized(&self) -> bool { true }
     /// `make_map().val_count()`, or `None` if subtries cannot be materialised.
     fn make_map_val_count(&self) -> Option<usize>;
 
@@ -202,6 +214,9 @@ trait ReadSource:
 impl<'a, 'p> ReadSource for ReadZipperUntracked<'a, 'p, u64> {
     fn dump_fork(&self) -> String {
         dump(&mut self.fork_read_zipper())
+    }
+    fn regularized(&self) -> bool {
+        self.debug_is_regularized()
     }
     fn make_map_val_count(&self) -> Option<usize> {
         Some(self.make_map().val_count())
@@ -916,6 +931,11 @@ fn run_ops<R: ReadSource>(
             if check {
                 check_zipper(&wz, "write zipper", root0);
                 check_zipper(rz, "read zipper", root1);
+            }
+            // Attribute a broken zipper to the operation that broke it.  Under
+            // `--check` only, so a normal differential pass is unaffected.
+            if check && !rz.regularized() {
+                panic!("op {step} {name} left the read zipper deregularized");
             }
             out.push(format!(
                 "{step} {name} ret={ret} W={} R={}",

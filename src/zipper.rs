@@ -1339,6 +1339,26 @@ pub struct ReadZipperUntracked<'a, 'path, V: Clone + Send + Sync, A: Allocator =
     z: ReadZipperCore<'a, 'path, V, A>,
 }
 
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> ReadZipperUntracked<'_, '_, V, A> {
+    /// Whether the zipper is in *regularized* form -- see `ReadZipperCore::regularize`.
+    ///
+    /// Exposed for the differential harness, which asserts it after every
+    /// operation.  A movement method that returns a deregularized zipper is a
+    /// defect: `descend_to` and its kin assert on it in a debug build and loop
+    /// forever in a release one, so the damage surfaces arbitrarily far from its
+    /// cause.  Checking after each operation names the culprit instead.
+    #[doc(hidden)]
+    pub fn debug_is_regularized(&self) -> bool {
+        self.z.is_regularized()
+    }
+
+    /// A dump of the fields that decide [`Self::debug_is_regularized`].
+    #[doc(hidden)]
+    pub fn debug_state(&self, label: &str) -> String {
+        self.z.debug_state(label)
+    }
+}
+
 impl<V: Clone + Send + Sync + Unpin, A: Allocator> Zipper for ReadZipperUntracked<'_, '_, V, A> { zipper_impl_lens!(Zipper self => self.z); }
 impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperValues<V> for ReadZipperUntracked<'_, '_, V, A> { zipper_impl_lens!(ZipperValues self => self.z); }
 impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperPathBuffer for ReadZipperUntracked<'trie, '_, V, A> { zipper_impl_lens!(ZipperPathBuffer self => self.z); }
@@ -2139,7 +2159,13 @@ pub(crate) mod read_zipper_core {
         fn to_next_sibling_byte(&mut self) -> Option<u8> {
             timed_span!(ToNextSiblingByte, COUNTERS);
             self.prepare_buffers();
-            if self.prefix_buf.len() == 0 {
+            //A sibling step rewrites the last byte of `prefix_buf`.  At this zipper's *root* that
+            // byte belongs to the root path, so rewriting it moves the zipper's own root:
+            // `origin_path` changes while `root_key_start` and `focus_node` still describe the
+            // old one.  `ZipperMoving` documents the answer here as "did not move", and
+            // `ZipperHead` depends on it -- a zipper must never leave the subtrie it was granted.
+            // This used to test `prefix_buf.len() == 0`, which asks "at the *map* root".
+            if self.at_root() {
                 return None
             }
             debug_assert!(self.is_regularized());
@@ -2174,8 +2200,16 @@ pub(crate) mod read_zipper_core {
                     self.focus_iter_token = new_tok;
 
                     //If this operation landed us at the end of the path within the node, then we
-                    // should re-regularize the zipper before returning
-                    if key_bytes.len() == 1 {
+                    // should re-regularize the zipper before returning.
+                    //
+                    //`node_key.len()` is `fixed_len + 1`, so this is "the sibling's key ends
+                    // exactly where the node key does".  It used to test `key_bytes.len() == 1`,
+                    // which says the same thing only when the node key is a single byte -- i.e.
+                    // when the zipper's root happens to sit on a node boundary.  Rooted inside a
+                    // node, `node_key` is longer, the descent was skipped, and the zipper was
+                    // returned deregularized.  `descend_to` asserts on that in a debug build and
+                    // loops forever in a release one.
+                    if key_bytes.len() == fixed_len + 1 {
                         match child_node {
                             None => {},
                             Some(rec) => {
@@ -2618,8 +2652,34 @@ pub(crate) mod read_zipper_core {
         /// Returns `true` if the zipper is in a regularized form, otherwise returns the `false`
         ///
         /// See docs for [Self::regularize].
+        /// A dump of every field that decides `is_regularized`, for diagnosing a zipper that
+        /// comes back from a movement method in a state a later `descend_to` cannot survive.
+        pub(crate) fn debug_state(&self, label: &str) -> String {
+            let origin: &[u8] = if self.prefix_buf.capacity() > 0 {
+                &self.prefix_buf[..self.origin_path.len()]
+            } else {
+                unsafe { self.origin_path.as_slice_unchecked() }
+            };
+            let nks = self.node_key_start();
+            let nk = self.node_key();
+            let child = self.focus_node.node_get_child(nk).map(|(n, _)| n);
+            format!(
+"{label}:\n  origin_path = {origin:?} (len {})\n  prefix_buf = {:?}\n  \
+root_key_start = {}, root_parent_key_start = {}\n  ancestors = {:?}\n  \
+node_key_start() = {nks}, node_key() = {nk:?}\n  child at node_key = {child:?}, \
+is_regularized() = {}",
+                self.origin_path.len(),
+                self.prefix_buf,
+                self.root_key_start,
+                if self.root_parent_key_start == usize::MAX { "MAX".to_string() }
+                    else { self.root_parent_key_start.to_string() },
+                self.ancestors.iter().map(|(_, _, off)| *off).collect::<Vec<_>>(),
+                self.is_regularized(),
+            )
+        }
+
         #[inline]
-        fn is_regularized(&self) -> bool {
+        pub(crate) fn is_regularized(&self) -> bool {
             let key_start = self.node_key_start();
             if self.prefix_buf.len() > key_start {
                 self.focus_node.node_get_child(self.node_key()).is_none()
