@@ -86,6 +86,13 @@ infix:50 " ≼ " => fun p q => Path.isPrefixOf p q
 def Path.prefixes (p : Path) : List Path :=
   (List.range (p.length + 1)).map (fun n => p.take n)
 
+/-- Every *proper* prefix of `p`, shortest first: `[], p[..1], ..., p[..n-1]`.
+
+Used to phrase "the nearest ancestor such that ..." as a filter over ancestors,
+rather than as a loop that walks upward. -/
+def Path.properPrefixes (p : Path) : List Path :=
+  (List.range p.length).map (fun n => p.take n)
+
 /-- Drop `p` from the front of `q`, if `p` is a prefix of `q`. -/
 def Path.stripPrefix : Path → Path → Option Path
   | [], q => some q

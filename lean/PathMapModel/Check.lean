@@ -147,6 +147,44 @@ def dropT1Result : T := ((zipAt dropT1 [0x31,0x32,0x33,0x3a] []).joinKPathInto o
 #guard fixtures.all (subSelfEmptyVals ops)
 #guard fixtures.all (restrictSelf ops)
 
+/-! ## Naive oracles
+
+`Trie.join` / `meet` / `sub` are defined in terms of `ValOps`, which was
+transcribed from `src/ring.rs` -- so a defect in the crate's `Option<V>` lattice
+impls could have been copied into the model, after which the differential would
+agree and report nothing.
+
+These oracles are written from set theory instead: they say which *keys* survive
+without consulting `ValOps`, `Trie`, or anything else the model shares with the
+crate.  They are deliberately naive and quadratic.  Where they and the real
+definitions agree, the shared-derivation risk is excluded for that operation.
+
+`u64Ops.psub` annihilates exactly when the two values are equal, which is the one
+fact about the value type these need. -/
+
+/-- Keys of `a` and `b` together: what `join` must produce. -/
+def joinKeysOracle (a b : T) : List Path :=
+  Path.sortDedup (a.vals.map (·.1) ++ b.vals.map (·.1))
+
+/-- Keys in both: what `meet` must produce. -/
+def meetKeysOracle (a b : T) : List Path :=
+  Path.sortDedup ((a.vals.map (·.1)).filter (fun k => (b.valAt k).isSome))
+
+/-- Keys of `a` whose value `b` does not annihilate: what `sub` must produce.
+For `u64`, `psubtract` annihilates exactly on equal values. -/
+def subKeysOracle (a b : T) : List Path :=
+  Path.sortDedup <| a.vals.filterMap fun kv =>
+    match b.valAt kv.1 with
+    | some bv => if bv == kv.2 then none else some kv.1
+    | none => some kv.1
+
+#guard fixtures.all (fun a => fixtures.all (fun b =>
+  (Trie.join ops a b).vals.map (·.1) == joinKeysOracle a b))
+#guard fixtures.all (fun a => fixtures.all (fun b =>
+  (Trie.meet ops a b).vals.map (·.1) == meetKeysOracle a b))
+#guard fixtures.all (fun a => fixtures.all (fun b =>
+  (Trie.sub ops a b).vals.map (·.1) == subKeysOracle a b))
+
 /-- `restrict` against the `BTreeSet` oracle from
 `tests/pathmap_algebra_differential.rs`: a path of `a` survives when some prefix
 of it — the empty prefix and the path itself both count — carries a value in `b`. -/

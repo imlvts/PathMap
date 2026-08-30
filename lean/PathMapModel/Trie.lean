@@ -171,14 +171,19 @@ def pruneCount (t : Trie V) (rootLen : Nat) (p : Path) : Nat :=
   if p.length ≤ rootLen then 0
   else if !t.isDanglingTip p then 0
   else
-    -- highest ancestor index we may stop at, scanning from just above the focus
-    let stops := (List.range (p.length - rootLen)).filterMap fun j =>
-      let i := p.length - 1 - j            -- i ranges over p.length-1 .. rootLen
-      let a := p.take i
-      if i == rootLen || (t.valAt a).isSome || t.childCount a ≥ 2 then some i else none
-    -- `min` is semantically a no-op (every stop index is ≥ rootLen); it makes the
-    -- "cannot prune above the zipper root" bound syntactic.  See `Spec.pruneCount_le`.
-    min (p.length - rootLen) (p.length - (stops.head?.getD rootLen))
+    -- The chain is removed back to the deepest strict ancestor that must be
+    -- kept: one carrying a value, one that branches, or the one at the stop
+    -- depth.  `properPrefixes` is shortest-first, so the last qualifying entry
+    -- is the deepest; the ancestor at `rootLen` always qualifies, so there is
+    -- always an answer.
+    let stops := (Path.properPrefixes p).filter fun a =>
+      a.length ≤ rootLen || (t.valAt a).isSome || t.childCount a ≥ 2
+    let a := (stops.getLast?).getD []
+    -- `max` is semantically a no-op -- the filter cannot select an ancestor
+    -- shallower than `rootLen` once one at `rootLen` qualifies -- but it makes
+    -- the "never prunes above the stop depth" bound syntactic, so
+    -- `Spec.pruneCount_le` needs no reasoning about which ancestor was picked.
+    p.length - (max rootLen a.length)
 
 /-- `ZipperWriting::prune_path`: returns the number of bytes removed and the
 pruned trie. -/

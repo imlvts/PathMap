@@ -78,9 +78,6 @@ def rootPrefixPath : Path := z.root
 order.  This is the zipper's entire visible universe. -/
 def subPaths : List Path := (z.trie.subtrie z.root).paths
 
-/-- A loop bound large enough for any single descent/ascent in this trie. -/
-def fuel : Nat := z.trie.paths.foldl (fun a q => max a q.length) 0 + 1
-
 /-! ## `trait Zipper` -/
 
 /-- `Zipper::path_exists`. -/
@@ -130,6 +127,13 @@ def focusNodeIsEmpty : Bool := z.trie.belowIsEmpty z.focus
 
 /-! ## `trait ZipperMoving` — position -/
 
+/-- The same zipper, its focus moved to the relative path `q`.
+
+Lets an ancestor or descendant be *named* and then asked about, so the
+specifications below can say "the deepest ancestor such that ..." instead of
+walking there step by step. -/
+def atPath (q : Path) : Zip V := { z with path := q }
+
 /-- `ZipperMoving::at_root`. -/
 def atRoot : Bool := z.path.isEmpty
 
@@ -155,26 +159,22 @@ def descendToCheck (k : Path) : Bool × Zip V :=
 /-- `ZipperMoving::descend_to_existing`: descend byte by byte, stopping where the
 path stops existing.  Returns the number of bytes actually descended. -/
 def descendToExisting (k : Path) : Nat × Zip V :=
-  go z k 0
-where
-  go (z : Zip V) : Path → Nat → Nat × Zip V
-    | [], n => (n, z)
-    | b :: bs, n =>
-        let z' := z.descendToByte b
-        if z'.pathExists then go z' bs (n + 1) else (n, z)
+  -- Existence is prefix-closed, so the prefixes of `k` that still exist form an
+  -- initial segment: the answer is simply the longest prefix of `k` that exists.
+  let reach := ((List.range (k.length + 1)).filter
+    (fun j => (z.descendTo (k.take j)).pathExists)).getLast?.getD 0
+  (reach, z.descendTo (k.take reach))
 
 /-- `ZipperMoving::descend_to_val`: descend byte by byte, stopping at the first
 value encountered *below* the starting focus, or where the path stops existing. -/
 def descendToVal (k : Path) : Nat × Zip V :=
-  go z k 0
-where
-  go (z : Zip V) : Path → Nat → Nat × Zip V
-    | [], n => (n, z)
-    | b :: bs, n =>
-        let z' := z.descendToByte b
-        if !z'.pathExists then (n, z)
-        else if z'.isVal then (n + 1, z')
-        else go z' bs (n + 1)
+  -- As far as the path exists, but no further than the first value *strictly*
+  -- below the starting focus -- so a value already at the focus does not stop it.
+  let reach := ((List.range (k.length + 1)).filter
+    (fun j => (z.descendTo (k.take j)).pathExists)).getLast?.getD 0
+  let stop := ((List.range (reach + 1)).filter
+    (fun j => 0 < j && (z.descendTo (k.take j)).isVal)).head?.getD reach
+  (stop, z.descendTo (k.take stop))
 
 /-- `ZipperMoving::descend_to_existing_byte`. -/
 def descendToExistingByte (b : UInt8) : Bool × Zip V :=
@@ -200,15 +200,18 @@ def descendLastByte : Option UInt8 × Zip V :=
 /-- `ZipperMoving::descend_until`: descend while there is exactly one child,
 stopping on a value.  A no-op on a branch, a leaf, or a non-existent path. -/
 def descendUntil : Bool × Zip V :=
-  go z.fuel z false
-where
-  go : Nat → Zip V → Bool → Bool × Zip V
-    | 0, z, moved => (moved, z)
-    | n + 1, z, moved =>
-        if z.childCount == 1 then
-          let z' := (z.descendFirstByte).2
-          if z'.isVal then (true, z') else go n z' true
-        else (moved, z)
+  -- Nothing happens unless the focus has exactly one child.  When it does, the
+  -- locations below it form a chain until the first one that branches, ends, or
+  -- carries a value -- so the destination is simply the *nearest* descendant
+  -- that is a value or is not single-childed.  `subPaths` is in depth-first
+  -- order, which along a chain is order of increasing depth, so `find?` returns
+  -- the nearest one.
+  if z.childCount != 1 then (false, z)
+  else
+    match (z.subPaths.filter (fun q => z.path ≼ q && Path.lt z.path q)).find?
+      (fun q => (z.atPath q).isVal || (z.atPath q).childCount != 1) with
+    | some q => (true, z.atPath q)
+    | none => (false, z)
 
 /-- `ZipperMoving::descend_until_observed`: `descend_until`, reporting each byte
 it descends to a `PathObserver`.
@@ -248,30 +251,30 @@ def ascendByte : Bool × Zip V :=
 carries a value or branches, or to the root.  Returns the number of bytes
 ascended; `0` means the zipper was already at its root. -/
 def ascendUntil : Nat × Zip V :=
+  -- The destination is the deepest strict ancestor that carries a value or branches,
+  -- or the root.  `properPrefixes` is shortest-first, so the last
+  -- element that qualifies is the deepest one; the root always
+  -- qualifies, so there is always an answer.
   if z.atRoot then (0, z)
   else
-    let z2 := go z.path.length z
-    (z.path.length - z2.path.length, z2)
-where
-  go : Nat → Zip V → Zip V
-    | 0, z => z
-    | n + 1, z =>
-        let z2 := (z.ascendByte).2
-        if z2.atRoot || z2.isVal || z2.childCount > 1 then z2 else go n z2
+    let stops := (Path.properPrefixes z.path).filter fun a =>
+      a.isEmpty || (z.atPath a).isVal || (z.atPath a).childCount > 1
+    let a := (stops.getLast?).getD []
+    (z.path.length - a.length, z.atPath a)
 
 /-- `ZipperMoving::ascend_until_branch`: like `ascend_until`, but values do not
 stop the ascent.  Returns the number of bytes ascended. -/
 def ascendUntilBranch : Nat × Zip V :=
+  -- The destination is the deepest strict ancestor that branches (values do not stop it),
+  -- or the root.  `properPrefixes` is shortest-first, so the last
+  -- element that qualifies is the deepest one; the root always
+  -- qualifies, so there is always an answer.
   if z.atRoot then (0, z)
   else
-    let z2 := go z.path.length z
-    (z.path.length - z2.path.length, z2)
-where
-  go : Nat → Zip V → Zip V
-    | 0, z => z
-    | n + 1, z =>
-        let z2 := (z.ascendByte).2
-        if z2.atRoot || z2.childCount > 1 then z2 else go n z2
+    let stops := (Path.properPrefixes z.path).filter fun a =>
+      a.isEmpty || (z.atPath a).childCount > 1
+    let a := (stops.getLast?).getD []
+    (z.path.length - a.length, z.atPath a)
 
 /-! ## `trait ZipperMoving` — lateral movement -/
 
