@@ -14,6 +14,13 @@
 // different crates.
 
 
+// The trace is written into one growable buffer rather than a `Vec<String>`.
+// It used to be ~260 separately allocated `String`s per input per side, which
+// the in-process differential fuzzer pays for twice on every input and then
+// throws away; only a divergence needs the individual lines, and `str::lines()`
+// recovers them then.
+use core::fmt::Write as _;
+
 /// Number of distinct operations. Must match `PathMapModel.Fuzz.nops`.
 const NOPS: usize = 56;
 /// Maximum operations executed. Must match the `maxSteps` default in `Fuzz.run`.
@@ -137,19 +144,19 @@ fn focus_node_empty<Z: Zipper>(z: &Z) -> bool {
 /// Depth-first dump of everything at and below the zipper's root, relative to it.
 fn dump<Z: ZipperMoving + ZipperPath + ZipperValues<u64>>(z: &mut Z) -> String {
     z.reset();
-    let mut out = vec![format!("{}:{}", hex_path(z.path()), show_val(z.val()))];
-    while out.len() < DUMP_CAP && z.to_next_step() {
+    let mut lines = vec![format!("{}:{}", hex_path(z.path()), show_val(z.val()))];
+    while lines.len() < DUMP_CAP && z.to_next_step() {
         // A depth-first step from the root must go deeper.  Coming back to the
         // empty path means the zipper walked out of its own root -- the escape
         // in lean/FINDINGS.md #3, which would otherwise show up here as a
         // traversal that visits the same location repeatedly.
         if z.path().is_empty() {
-            out.push("ESCAPED-ROOT".to_string());
+            lines.push("ESCAPED-ROOT".to_string());
             break;
         }
-        out.push(format!("{}:{}", hex_path(z.path()), show_val(z.val())));
+        lines.push(format!("{}:{}", hex_path(z.path()), show_val(z.val())));
     }
-    out.join(",")
+    lines.join(",")
 }
 
 /// The read side of the harness: whatever the write zipper is reading *from*.
@@ -392,13 +399,13 @@ fn decode_header(d: &mut Dec) -> Option<(PathMap<u64>, PathMap<u64>, Vec<u8>, Ve
 /// `allow(dead_code)` because this file is `include!`d by three front ends and
 /// `act_trace` supplies its own entry point instead.
 #[allow(dead_code)]
-fn run(bytes: &[u8], check: bool) -> Vec<String> {
+fn run(bytes: &[u8], check: bool) -> String {
     let mut d = Dec { bytes, pos: 0 };
     let (mut map0, map1, root0, root1) = match decode_header(&mut d) {
         Some(x) => x,
-        None => return vec!["EMPTY".to_string()],
+        None => return "EMPTY\n".to_string(),
     };
-    let mut out: Vec<String> = Vec::new();
+    let mut out = String::new();
     {
         // NOTE: `read_zipper_at_borrowed_path` would panic (release: wrap) in
         // `to_next_k_path`, whose `path_len()` underflows before the path buffer
@@ -407,10 +414,10 @@ fn run(bytes: &[u8], check: bool) -> Vec<String> {
         let mut rz = map1.read_zipper_at_path(&root1);
         run_ops(&mut d, &mut out, &mut map0, &root0, &mut rz, &root1, check);
     }
-    out.push(format!("MAP0 {}", dump(&mut map0.read_zipper())));
-    out.push(format!("MAP1 {}", dump(&mut map1.read_zipper())));
-    out.push(format!("ROOT0 {}", hex_path(&root0)));
-    out.push(format!("ROOT1 {}", hex_path(&root1)));
+    let _ = writeln!(out, "MAP0 {}", dump(&mut map0.read_zipper()));
+    let _ = writeln!(out, "MAP1 {}", dump(&mut map1.read_zipper()));
+    let _ = writeln!(out, "ROOT0 {}", hex_path(&root0));
+    let _ = writeln!(out, "ROOT1 {}", hex_path(&root1));
     out
 }
 
@@ -418,7 +425,7 @@ fn run(bytes: &[u8], check: bool) -> Vec<String> {
 /// differ only in what they hand in as `rz`.
 fn run_ops<R: ReadSource>(
     d: &mut Dec,
-    out: &mut Vec<String>,
+    out: &mut String,
     map0: &mut PathMap<u64>,
     root0: &[u8],
     rz: &mut R,
@@ -562,9 +569,9 @@ fn run_ops<R: ReadSource>(
                     // `descend_first_k_path`).
                     let mut v: Vec<String> = Vec::new();
                     if k == 0 {
-                        out.push(format!(
+                        let _ = writeln!(out, 
                             "{step} k_path_walk ret=skip W={} R={}",
-                            fingerprint(&wz, root0), fingerprint(rz, root1)));
+                            fingerprint(&wz, root0), fingerprint(rz, root1));
                         step += 1;
                         continue;
                     }
@@ -917,11 +924,11 @@ fn run_ops<R: ReadSource>(
                 check_zipper(&wz, "write zipper", root0);
                 check_zipper(rz, "read zipper", root1);
             }
-            out.push(format!(
+            let _ = writeln!(out, 
                 "{step} {name} ret={ret} W={} R={}",
                 fingerprint(&wz, root0),
                 fingerprint(rz, root1)
-            ));
+            );
             step += 1;
         }
     }
