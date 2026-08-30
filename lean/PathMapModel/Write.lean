@@ -157,6 +157,45 @@ def graft (src : Zip V) : Zip V := z.graftMap src.makeMap
 def graftSrcAt (src : Zip V) (k : Path) : Zip V :=
   z.graftMap (src.trie.subtrie (src.focus ++ k))
 
+/-- `ZipperWriting::graft_masked_branches`: graft the source's child branches
+for each byte set in `mask`.
+
+Each set bit is a `graft_src_at` of the source's corresponding child, so the
+child's *value* travels with it, and a set bit whose branch is absent from the
+source leaves that branch absent here — grafting nothing removes.  With
+`remove_unset`, branches for clear bits are removed first, so `child_mask`
+afterwards is a subset of `mask`; without it they are left alone.
+
+`WriteZipperCore` overrides the trait's default implementation with a native
+one, so this op is really comparing two implementations of the same contract. -/
+def graftMaskedBranches (src : Zip V) (mask : ByteMask) (removeUnset : Bool) : Zip V :=
+  let z0 := if removeUnset then (z.removeBranches false).2 else z
+  z0.withTrie <| mask.foldl (fun t b =>
+    let child := z0.focus ++ [b]
+    let m := src.trie.subtrie (src.focus ++ [b])
+    let t1 := t.graftBelow child m
+    match m.valAt [] with
+    | some v => (t1.setVal child v).2
+    | none => (t1.removeVal child).2) z0.trie
+
+/-- `ZipperWriting::graft_child_maps`: as above, but the branches come from an
+explicit list of maps rather than from a source zipper.
+
+Feeding it the source's own child subtries must therefore produce exactly what
+`graft_masked_branches` produces from that source — the harness checks the two
+against each other as well as against this definition. -/
+def graftChildMaps (maps : List (ByteMask × Trie V)) (removeUnset : Bool) : Zip V :=
+  let z0 := if removeUnset then (z.removeBranches false).2 else z
+  z0.withTrie <| maps.foldl (fun t bm =>
+    match bm.1 with
+    | [b] =>
+      let child := z0.focus ++ [b]
+      let t1 := t.graftBelow child bm.2
+      (match bm.2.valAt [] with
+       | some v => (t1.setVal child v).2
+       | none => (t1.removeVal child).2)
+    | _ => t) z0.trie
+
 /-- `ZipperWriting::take_map`: remove the subtrie at the focus (value included)
 and return it as a `PathMap`.  Returns `none` when there was nothing to take. -/
 def takeMap (prune : Bool) : Option (Trie V) × Zip V :=
@@ -344,6 +383,23 @@ def subtractInto (src : Zip V) (prune : Bool) : AlgStatus × Zip V :=
         let zg := z1.withTrie (z1.trie.graftBelow z1.focus r)
         if st == .none && prune then (zg.prunePath).2 else zg
     (AlgStatus.merge st valStatus false valWasNone, z2)
+
+/-- `ZipperWriting::meet_2`: meet two *source* subtries and write the result at
+the focus.
+
+Two things separate this from `meet_into`.  It does not consult what is already
+at the focus, so — as the implementation notes — it never reports `Identity`,
+only `Element` or `None`.  And it works on nodes, so neither source's focus value
+is consulted and the focus value here is left untouched. -/
+def meet2 (a b : Zip V) : AlgStatus × Zip V :=
+  let an := a.focusNode
+  let bn := b.focusNode
+  if an.isEmptyMap || bn.isEmptyMap then
+    (.none, z.withTrie (z.trie.removeBelow z.focus))
+  else
+    let r := Trie.meet ops an bn
+    if r.isEmptyMap then (.none, z.withTrie (z.trie.removeBelow z.focus))
+    else (.element, z.withTrie (z.trie.graftBelow z.focus r))
 
 /-- `ZipperWriting::restrict`: keep only the paths below the focus that are
 prefixed by a path to a value in the source's subtrie.

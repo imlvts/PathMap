@@ -15,7 +15,7 @@
 
 
 /// Number of distinct operations. Must match `PathMapModel.Fuzz.nops`.
-const NOPS: usize = 53;
+const NOPS: usize = 56;
 /// Maximum operations executed. Must match the `maxSteps` default in `Fuzz.run`.
 const MAX_STEPS: usize = 256;
 /// Maximum entries in a `dump`. Must match `Fuzz.dumpAt`.
@@ -183,6 +183,13 @@ trait ReadSource:
     fn to_next_get_val_probe(&mut self) -> Option<(bool, Option<u64>, bool)>;
 
     fn do_graft<W: ZipperWriting<u64>>(&self, _wz: &mut W) -> bool { false }
+    fn do_graft_masked<W: ZipperWriting<u64>>(&self, _wz: &mut W, _m: ByteMask, _ru: bool) -> bool { false }
+    /// Currently unused: op 54 is quarantined (lean/FINDINGS.md #15).  Kept so
+    /// the op can be re-enabled with one line once the method is fixed.
+    #[allow(dead_code)]
+    fn do_graft_child_maps<W: ZipperWriting<u64>>(&self, _wz: &mut W, _m: ByteMask, _ru: bool) -> bool { false }
+    /// `meet_2` needs two sources; the second is this zipper moved to `path`.
+    fn do_meet_2<W: ZipperWriting<u64>>(&self, _wz: &mut W, _path: &[u8]) -> Option<AlgebraicStatus> { None }
     fn do_graft_src_at<W: ZipperWriting<u64>>(&self, _wz: &mut W, _p: &[u8]) -> bool { false }
     fn do_join_into<W: ZipperWriting<u64>>(&self, _wz: &mut W) -> Option<AlgebraicStatus> { None }
     fn do_join_map_into<W: ZipperWriting<u64>>(&self, _wz: &mut W) -> Option<AlgebraicStatus> { None }
@@ -214,6 +221,29 @@ impl<'a, 'p> ReadSource for ReadZipperUntracked<'a, 'p, u64> {
     fn do_graft<W: ZipperWriting<u64>>(&self, wz: &mut W) -> bool {
         wz.graft(self);
         true
+    }
+    fn do_graft_masked<W: ZipperWriting<u64>>(&self, wz: &mut W, m: ByteMask, ru: bool) -> bool {
+        wz.graft_masked_branches(self, m, ru);
+        true
+    }
+    fn do_graft_child_maps<W: ZipperWriting<u64>>(&self, wz: &mut W, m: ByteMask, ru: bool) -> bool {
+        // Fed this zipper's own child subtries, so the result must equal what
+        // `graft_masked_branches` produces from the same mask.
+        let maps: Vec<PathMap<u64>> = m
+            .iter()
+            .map(|b| {
+                let mut c = self.clone();
+                c.descend_to_byte(b);
+                c.make_map()
+            })
+            .collect();
+        wz.graft_child_maps(m, maps, ru);
+        true
+    }
+    fn do_meet_2<W: ZipperWriting<u64>>(&self, wz: &mut W, path: &[u8]) -> Option<AlgebraicStatus> {
+        let mut b = self.clone();
+        b.descend_to(path);
+        Some(wz.meet_2(self, &b))
     }
     fn do_graft_src_at<W: ZipperWriting<u64>>(&self, wz: &mut W, p: &[u8]) -> bool {
         wz.graft_src_at(self, p);
@@ -834,6 +864,40 @@ fn run_ops<R: ReadSource>(
                     ),
                     None => ("to_next_get_val", "skip".to_string()),
                 },
+                53 => {
+                    let n = get!(d.modn(4));
+                    let m = get!(d.path_n(n));
+                    let ru = get!(d.boolean());
+                    let mask = ByteMask::from_iter(m.iter().copied());
+                    let mut canon: Vec<u8> = m.clone();
+                    canon.sort_unstable();
+                    canon.dedup();
+                    let s = if (*rz).do_graft_masked(&mut wz, mask, ru) {
+                        format!("{}:{}", hex_path(&canon), show_bool(ru))
+                    } else {
+                        "skip".to_string()
+                    };
+                    ("graft_masked_branches", s)
+                }
+                54 => {
+                    let n = get!(d.modn(4));
+                    let m = get!(d.path_n(n));
+                    let ru = get!(d.boolean());
+                    let mask = ByteMask::from_iter(m.iter().copied());
+                    let mut canon: Vec<u8> = m.clone();
+                    canon.sort_unstable();
+                    canon.dedup();
+                    // Skipped outright: `graft_child_maps` is broken three ways
+                    // (lean/FINDINGS.md #15) and the node representations it
+                    // leaves behind degrade the AlgebraicStatus that *later*
+                    // operations report, contaminating the rest of the run.
+                    let _ = (mask, ru, &canon);
+                    ("graft_child_maps", "skip".to_string())
+                }
+                55 => {
+                    let p = get!(d.path(6));
+                    ("meet_2", show_status_opt((*rz).do_meet_2(&mut wz, &p)))
+                }
                 47 => {
                     let t = get!(d.modn(2));
                     // The blind-zipper addition: `descend_until` reporting the

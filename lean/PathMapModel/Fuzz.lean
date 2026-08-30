@@ -23,7 +23,7 @@ header:
   r0        := u8 % 4 ; r0 × pathbyte    -- write zipper root
   r1        := u8 % 4 ; r1 × pathbyte    -- read  zipper root
 body:
-  repeated: op := u8 % 53 ; operands per op (see `Op.decode`)
+  repeated: op := u8 % 56 ; operands per op (see `Op.decode`)
 ```
 
 Every **path byte** is masked to `b % 4`, so the generated tries share prefixes
@@ -192,7 +192,7 @@ a following `u8 % 2` byte (`0` = write zipper, `1` = read zipper); ops `27`–`4
 are write-zipper operations. -/
 
 /-- Number of distinct operations.  Must match `NOPS` in `examples/common/harness.rs`. -/
-def nops : Nat := 53
+def nops : Nat := 56
 
 /-- A full `k`-path iteration: `descend_first_k_path` followed by
 `to_next_k_path` until it runs out (capped at 32 stops).  Returns the locations
@@ -483,6 +483,33 @@ def step (s : St) (d : Dec) : Option (St × Dec) := do
              let v := if moved then z.val else none
              some (emit { s with rz := z } "to_next_get_val"
                (showBool moved ++ ":" ++ showVal v ++ ":1"), d)
+  | 53 => do let (n, d) ← d.mod 4; let (m, d) ← d.pathN n; let (ru, d) ← d.bool
+             if s.act then some (emit s "graft_masked_branches" "skip", d) else
+             do
+               let z := s.wz.graftMaskedBranches s.rz (ByteMask.ofList m) ru
+               some (emit { s with wz := z } "graft_masked_branches"
+                 (hexPath (ByteMask.ofList m) ++ ":" ++ showBool ru), d)
+  | 54 => do let (n, d) ← d.mod 4; let (m, d) ← d.pathN n; let (ru, d) ← d.bool
+             -- Fed the source's own child subtries, this must agree with
+             -- `graft_masked_branches` on the same mask.
+             -- Skipped outright, not just in ACT mode: `graft_child_maps` is
+             -- broken three ways (FINDINGS.md #15) and the node representations
+             -- it leaves behind degrade the `AlgebraicStatus` that *later*
+             -- operations report, which would contaminate the whole run.
+             if true then some (emit s "graft_child_maps" "skip", d) else
+             do
+               let mask := ByteMask.ofList m
+               let maps := mask.map (fun b => ([b], s.rz.trie.subtrie (s.rz.focus ++ [b])))
+               let z := s.wz.graftChildMaps maps ru
+               some (emit { s with wz := z } "graft_child_maps"
+                 (hexPath mask ++ ":" ++ showBool ru), d)
+  | 55 => do let (p, d) ← d.path
+             -- `meet_2` takes two sources; the second is the first moved to `p`.
+             if s.act then some (emit s "meet_2" "skip", d) else
+             do
+               let b := { s.rz with path := s.rz.path ++ p }
+               let (st, z) := s.wz.meet2 ops s.rz b
+               some (emit { s with wz := z } "meet_2" (toString st), d)
   | _ => some (emit s "nop" "-", d)
 
 /-- Run operations until the input is exhausted or `fuel` runs out. -/
