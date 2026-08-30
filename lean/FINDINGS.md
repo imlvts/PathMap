@@ -100,6 +100,23 @@ navigating wrongly*, rather than as anything specific to `to_next_val`.
 ## 3. A read zipper can escape its own root
 
 `case: root_escape` — **containment violation; relevant to `ZipperHead` safety**
+— **FIXED**
+
+Fixed as this file described: both `ReadZipperCore::to_next_sibling_byte` and
+`to_sibling` (which `to_prev_sibling_byte` calls, and which had no guard at all)
+now return `None` at `at_root()`.  Over 1,000,000 random programs there is not
+one escape.
+
+Two things this cost that are worth recording.  It is not only a containment
+violation but a **hang**: once `origin_path` has moved, `reset()` truncates to it
+and pops the ancestor stack, leaving the zipper deregularized, and `descend_to`
+then loops forever in a release build — reachable from `move_to_path`, which is
+`reset()` followed by `descend_to()`.  And the harness's own skip hid half of
+it: only after lifting the root skip on `to_prev_sibling_byte` did the missing
+guard in `to_sibling` show up, at 142 escapes per 20000 inputs.  A workaround
+that hides a defect also hides its siblings.
+
+The original report follows.
 
 ```rust
 map.insert(&[0, 0, 3], 161);

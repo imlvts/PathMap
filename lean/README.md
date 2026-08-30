@@ -316,11 +316,14 @@ commented at its site:
   both destroy the subtrie.
 * `descend_first_k_path(0)` / `to_next_k_path(0)` — degenerate; report success
   without moving, forever.
-* `to_next_sibling_byte` / `to_prev_sibling_byte` at the zipper root — the native
-  read zipper leaves its own root there.
 * `prune_path` / `prune_ascend`, and the `prune` flag on every other operation,
   for a write zipper not rooted at the map root — the depth pruned is a function
   of internal node layout, so there is nothing to specify.
+
+`to_next_sibling_byte` / `to_prev_sibling_byte` at the zipper root used to be on
+that list: the native read zipper left its own root there.  That is fixed, so
+the skip is gone and the case runs — it is the one the skip was hiding, and
+lifting it immediately found the second half of the same defect in `to_sibling`.
 
 `to_next_k_path` is also only exercised as the continuation of a
 `descend_first_k_path` iteration (the `k_path_walk` op), because

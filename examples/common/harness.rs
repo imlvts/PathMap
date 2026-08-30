@@ -527,24 +527,18 @@ fn run_ops<R: ReadSource>(
                     ("ascend_until_branch", format!("{r}"))
                 }
                 11 => {
+                    // No longer skipped at the zipper root: the native ReadZipper
+                    // used to escape its own root there, and now returns "did not
+                    // move" as `ZipperMoving` documents.  This is the case the
+                    // skip was hiding, so it is the one worth running.
                     let t = get!(d.modn(2));
-                    // Skipped at the zipper root: the native ReadZipper escapes
-                    // its own root there. See `Zip.toNextSiblingByte`.
-                    if tgt!(t, wz, *rz, z, z.at_root()) {
-                        ("to_next_sibling_byte", "skip".to_string())
-                    } else {
-                        let r = tgt!(t, wz, *rz, z, z.to_next_sibling_byte());
-                        ("to_next_sibling_byte", show_byte_opt(r))
-                    }
+                    let r = tgt!(t, wz, *rz, z, z.to_next_sibling_byte());
+                    ("to_next_sibling_byte", show_byte_opt(r))
                 }
                 12 => {
                     let t = get!(d.modn(2));
-                    if tgt!(t, wz, *rz, z, z.at_root()) {
-                        ("to_prev_sibling_byte", "skip".to_string())
-                    } else {
-                        let r = tgt!(t, wz, *rz, z, z.to_prev_sibling_byte());
-                        ("to_prev_sibling_byte", show_byte_opt(r))
-                    }
+                    let r = tgt!(t, wz, *rz, z, z.to_prev_sibling_byte());
+                    ("to_prev_sibling_byte", show_byte_opt(r))
                 }
                 13 => {
                     let t = get!(d.modn(2));

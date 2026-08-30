@@ -35,7 +35,7 @@ const CASES: &[(&str, &str)] = &[
     ("join_into_empty_dst", "join_into silently drops the source when the destination map is empty"),
     ("to_next_val_after_step", "to_next_val misses every downstream value after descend_first_byte / to_next_step / descend_first_k_path"),
     ("sibling_after_iteration", "to_next_sibling_byte fails after the focus was reached by to_next_val"),
-    ("root_escape", "a read zipper whose root does not exist walks out of its own root"),
+    ("root_escape", "FIXED: a read zipper whose root does not exist walked out of its own root"),
     ("insert_prefix_empty", "insert_prefix(b\"\") destroys the subtrie instead of doing nothing"),
     ("drop_head_zero", "join_k_path_into(0) destroys the subtrie instead of doing nothing"),
     ("prune_reach", "prune_path's depth and reported byte count depend on internal node layout"),
@@ -177,7 +177,16 @@ fn run(name: &str) {
             let moved = rz.to_next_sibling_byte();
             println!("  to_next_sibling_byte->{moved:?} at_root={} path={:?} origin={:?} val={:?}",
                      rz.at_root(), rz.path(), rz.origin_path(), rz.val());
-            println!("  <-- the zipper is reading [0,0,3], outside its own root");
+            if rz.origin_path() == [0u8, 0, 1] {
+                println!("  <-- FIXED: the zipper stayed inside its own root");
+            } else {
+                println!("  <-- the zipper is reading {:?}, outside its own root", rz.origin_path());
+            }
+            // The same escape was reachable through `to_prev_sibling_byte`, which
+            // routes through `to_sibling` and had no root guard at all.
+            let mut pz = map.read_zipper_at_path(&[0u8, 0, 1]);
+            let pmoved = pz.to_prev_sibling_byte();
+            println!("  to_prev_sibling_byte->{pmoved:?} origin={:?}", pz.origin_path());
         }
 
         // Documented as the inverse of `drop_head`; with an empty prefix it must

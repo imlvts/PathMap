@@ -384,24 +384,18 @@ fn step(s: &mut St, d: &mut Dec) -> Option<()> {
             s.emit("ascend_until_branch", &r.to_string());
         }
         11 => {
+            // No longer skipped at the zipper root: the crate used to escape its
+            // own root there and now returns "did not move", which is what the
+            // model has always specified.  That case is the whole point of the
+            // op, so it is the one worth running.
             let t = d.modn(2)?;
-            // Skipped at the zipper root: `ReadZipper::to_next_sibling_byte`
-            // escapes its own root there (see `Zip::to_next_sibling_byte`).
-            if s.target_ref(t).at_root() {
-                s.emit("to_next_sibling_byte", "skip");
-            } else {
-                let r = s.target(t).to_next_sibling_byte();
-                s.emit("to_next_sibling_byte", &show_byte_opt(r));
-            }
+            let r = s.target(t).to_next_sibling_byte();
+            s.emit("to_next_sibling_byte", &show_byte_opt(r));
         }
         12 => {
             let t = d.modn(2)?;
-            if s.target_ref(t).at_root() {
-                s.emit("to_prev_sibling_byte", "skip");
-            } else {
-                let r = s.target(t).to_prev_sibling_byte();
-                s.emit("to_prev_sibling_byte", &show_byte_opt(r));
-            }
+            let r = s.target(t).to_prev_sibling_byte();
+            s.emit("to_prev_sibling_byte", &show_byte_opt(r));
         }
         13 => {
             let t = d.modn(2)?;

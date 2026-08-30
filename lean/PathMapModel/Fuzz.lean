@@ -260,17 +260,15 @@ def step (s : St) (d : Dec) : Option (St × Dec) := do
              let (r, s) := onTarget s t (fun z => z.ascendUntilBranch)
              some (emit s "ascend_until_branch" (toString r), d)
   | 11 => do let (t, d) ← d.mod 2
-             -- Skipped at the zipper root: `ReadZipper::to_next_sibling_byte`
-             -- escapes its own root there (see the notes in `Zip.toNextSiblingByte`).
-             if (getTarget s t).atRoot then some (emit s "to_next_sibling_byte" "skip", d)
-             else
-               let (r, s) := onTarget s t (fun z => z.toNextSiblingByte)
-               some (emit s "to_next_sibling_byte" (showByteOpt r), d)
+             -- No longer skipped at the zipper root.  `ReadZipper` used to escape
+             -- its own root there; it now returns "did not move", which is what
+             -- this model always specified, so the case the skip was hiding is
+             -- exactly the one worth running.
+             let (r, s) := onTarget s t (fun z => z.toNextSiblingByte)
+             some (emit s "to_next_sibling_byte" (showByteOpt r), d)
   | 12 => do let (t, d) ← d.mod 2
-             if (getTarget s t).atRoot then some (emit s "to_prev_sibling_byte" "skip", d)
-             else
-               let (r, s) := onTarget s t (fun z => z.toPrevSiblingByte)
-               some (emit s "to_prev_sibling_byte" (showByteOpt r), d)
+             let (r, s) := onTarget s t (fun z => z.toPrevSiblingByte)
+             some (emit s "to_prev_sibling_byte" (showByteOpt r), d)
   | 13 => do let (t, d) ← d.mod 2
              let (r, s) := onTarget s t (fun z => z.toNextStep)
              some (emit s "to_next_step" (showBool r), d)

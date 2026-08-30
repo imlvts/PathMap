@@ -213,9 +213,9 @@ class Child:
 # the first operation whose trace line differs; panic entries key on the file
 # and message.  See lean/FINDINGS.md for the write-up of each, and
 # `cargo run --example zipper_bug_repros -- <case>` for a reproducer.
+# NOTE: `root_escape` used to head this list.  It is fixed, so it is *not* here:
+# a zipper leaving its own root must now surface as a new divergence, loudly.
 KNOWN = [
-    (["ESCAPED-ROOT"],
-     "a zipper left its own root: root_prefix_path() changed [root_escape]"),
     (["to_next_val"],
      "to_next_val() misses downstream values after a token-maintaining move "
      "[to_next_val_after_step]"),

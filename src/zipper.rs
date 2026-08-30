@@ -2872,6 +2872,14 @@ is_regularized() = {}",
         #[inline]
         fn to_sibling(&mut self, next: bool) -> Option<u8> {
             self.prepare_buffers();
+            //Same contract as `to_next_sibling_byte`, and for the same reason: every arm below
+            // rewrites the last byte of `prefix_buf`, and at this zipper's root that byte belongs
+            // to the root path, so rewriting it moves the zipper's own root.  `to_sibling` had no
+            // guard at all, which is why lifting the harness's root skip on
+            // `to_prev_sibling_byte` immediately turned up 142 escapes per 20000 inputs.
+            if self.at_root() {
+                return None
+            }
             debug_assert!(self.is_regularized());
             if self.node_key().len() != 0 {
                 match self.focus_node.get_sibling_of_child(self.node_key(), next) {

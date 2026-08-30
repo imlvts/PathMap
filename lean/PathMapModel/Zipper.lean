@@ -289,15 +289,13 @@ def ascendUntilBranch : Nat × Zip V :=
 At the zipper root there is no last byte, so the documented answer — and the
 `ZipperMoving` default implementation's answer — is `false`.
 
-BUG (`pathmap` 0.3.1): the native `ReadZipper` implementation instead consults
-the last byte of the *absolute* origin path, so a read zipper whose root does
-not exist but has a sibling **leaves its own root**.  With map `{[0,0,3] ↦ v}`
-and a zipper rooted at `[0,0,1]`, `to_next_sibling_byte()` returns `true`,
-`path()` still reports `[]` and `at_root()` still reports `true`, but
-`origin_path()` is now `[0,0,3]` and the zipper reads `v`.  That breaks the
-containment a `ZipperHead` relies on to hand out non-overlapping zippers.  The
-model specifies the documented behaviour; the differential harness skips the
-operation at the root so the known bug does not mask others. -/
+FIXED (was FINDINGS.md #3): the native `ReadZipper` used to consult the last
+byte of the *absolute* origin path, so a read zipper rooted at a non-empty path
+**left its own root** -- `origin_path()` moved while `path()` and `at_root()`
+went on claiming otherwise, breaking the containment a `ZipperHead` relies on to
+hand out non-overlapping zippers.  Both `to_next_sibling_byte` and `to_sibling`
+now guard on `at_root()`, which is what this model always specified, so the
+harness no longer skips the operation at the root. -/
 def toNextSiblingByte : Option UInt8 × Zip V :=
   -- Now keyed on `focus_byte`, whose value at the root is unspecified, so the
   -- `at_root` guard is what keeps the zipper inside its own subtrie.
