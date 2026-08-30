@@ -146,6 +146,11 @@ required-features = ["arena_compact", "serialization"]
 members = ["pathmap-derive", "examples/sampling", "examples/arena_compact_tests"]
 resolver = "2"
 
+# In-process differential fuzzer: the reference model against the real crate,
+# no subprocesses.  See its module docs and lean/README.md.
+[[example]]
+name = "differential"
+
 # The Rust reference model (examples/reference/) and its differential trace
 # front end; see lean/README.md.  `test = true` so its ported `Check.lean`
 # guards and randomised law sweep run under `cargo test`.
