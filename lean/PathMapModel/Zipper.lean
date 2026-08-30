@@ -1,4 +1,4 @@
-import PathMapModel.Trie
+import PathMapModel.PathMap
 
 /-!
 # The zipper
@@ -59,7 +59,7 @@ namespace PathMapModel
 /-- A zipper: a trie, the absolute path of the zipper's root, and the relative
 path to the focus. -/
 structure Zip (V : Type) where
-  trie : Trie V
+  trie : PathMap V
   root : Path
   path : Path
 deriving Repr
@@ -84,7 +84,7 @@ def subPaths : List Path := (z.trie.subtrie z.root).paths
 `val` at once.  Definitions that must handle a location existing *without* a
 value are written against this, so the `match` will not compile until they say
 what happens to it. -/
-def entry : Trie.Entry V := z.trie.entryAt z.focus
+def entry : PathMap.Entry V := z.trie.entryAt z.focus
 
 /-- `Zipper::path_exists`. -/
 def pathExists : Bool := z.trie.pathExists z.focus
@@ -121,12 +121,12 @@ def valAt (k : Path) : Option V := z.trie.valAt (z.focus ++ k)
 
 /-- `ZipperInfallibleSubtries::make_map`.  Under the default `graft_root_vals`
 feature the value at the focus becomes the new map's root value. -/
-def makeMap : Trie V := z.trie.subtrie z.focus
+def makeMap : PathMap V := z.trie.subtrie z.focus
 
 /-- The node below the focus — what `get_focus` returns, i.e. `make_map` with the
 focus value stripped.  This, not `makeMap`, is what the algebraic operations and
 `graft_internal` consume. -/
-def focusNode : Trie V := (z.makeMap.removeVal []).2
+def focusNode : PathMap V := (z.makeMap.removeVal []).2
 
 /-- `get_focus().is_none()`: the focus has no descendants. -/
 def focusNodeIsEmpty : Bool := z.trie.belowIsEmpty z.focus

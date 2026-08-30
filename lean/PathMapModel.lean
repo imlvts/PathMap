@@ -1,5 +1,5 @@
 import PathMapModel.Basic
-import PathMapModel.Trie
+import PathMapModel.PathMap
 import PathMapModel.Zipper
 import PathMapModel.Write
 import PathMapModel.Map

@@ -47,6 +47,21 @@ interesting consequence is that writing the model is where most of the value was
 the semantics precisely and discovering there was no consistent statement to
 make, before a single fuzz input had been generated.
 
+## The model is not a trie
+
+Worth stating plainly, because the name would otherwise mislead: a trie is a
+prefix tree, and this model is a flat list of `(path, value?)` pairs.  It is not
+one, and does not try to be.
+
+The model specifies the *meaning* a trie carries, not the trie.  Shaped like the
+implementation, it would inherit the implementation's structure — and a bug in
+how that structure is handled could then be present in both and cancel out.
+Findings 14, 15 and 16 are all bugs of exactly that kind (an invalid node built
+by `graft`, a dense-node path in `graft_child_maps`, empty nodes in the sharing
+machinery), and the model catches them precisely because it has no nodes to get
+wrong.  The type is named `PathMap`, after the crate's own name for the thing a
+trie implements.
+
 ## The representation
 
 Everything rests on one observation.  A `pathmap` trie is **not** just a
@@ -55,7 +70,7 @@ value, and `remove_val(false)` leaves one behind.  So a location and a value at
 that location are separate facts, and the state records both:
 
 ```lean
-structure Trie (V : Type) where
+structure PathMap (V : Type) where
   entries : List (Path × Option V)   -- every location that exists, with its
                                      -- value if it has one
 ```
@@ -65,11 +80,11 @@ halves the API actually observes — `paths` and `vals` — are *derived* from i
 which makes the awkward invariant "every valued path also exists" structural
 rather than something every constructor has to maintain: a value cannot be
 recorded at a location that is not in the list.  A `none` entry is exactly a
-dangling path.  (`Trie.mem_vals_pathExists` states this as a theorem; it used to
+dangling path.  (`PathMap.mem_vals_pathExists` states this as a theorem; it used to
 be a runtime check, because in the two-list form it could fail.)
 
 The list is canonical — sorted by path, no duplicates, prefix-closed, containing
-`[]` — so **structural equality of `Trie`s is observational equality**, which is
+`[]` — so **structural equality of `PathMap`s is observational equality**, which is
 exactly what is needed to decide `AlgebraicStatus::Identity` versus `Element`.
 
 A location is therefore in one of three states, and asking about it returns all
@@ -80,7 +95,7 @@ inductive Entry (V : Type) | absent | bare | valued : V → Entry V
 -- absent ~ Rust's Vacant, valued ~ Occupied, and `bare` is the state a
 -- HashMap has no room for: there, but holding nothing.
 
-def entryAt   : Trie V → Path → Entry V
+def entryAt   : PathMap V → Path → Entry V
 def valAt      t p := (t.entryAt p).val       -- derived
 def pathExists t p := (t.entryAt p).present   -- derived
 ```
@@ -91,13 +106,13 @@ operations that mishandle it.  A definition written against `Entry` cannot
 quietly forget it: the `match` will not compile until it says what happens.  And
 `valued` entails existence by construction, so "a value at a path that is not
 there" is unrepresentable rather than merely false
-(`Trie.Entry.present_of_val`).
+(`PathMap.Entry.present_of_val`).
 
 A zipper is that trie plus two paths:
 
 ```lean
 structure Zip (V : Type) where
-  trie : Trie V   -- the map (a snapshot, for a read zipper; live, for a write zipper)
+  trie : PathMap V   -- the map (a snapshot, for a read zipper; live, for a write zipper)
   root : Path     -- root_prefix_path(): where the zipper was created
   path : Path     -- path(): the relative path to the focus
 ```
@@ -110,7 +125,7 @@ Two distinctions the model keeps explicit because `pathmap` depends on them:
 * **A node is what lies strictly below a location.**  The value *at* a location
   lives in its parent's cell.  `get_focus`, `graft_internal` and every `*_dyn`
   algebraic primitive operate on nodes, so they never touch the focus value;
-  `Trie.subtrie` includes it, `Zip.focusNode` does not.
+  `PathMap.subtrie` includes it, `Zip.focusNode` does not.
 * **The `graft_root_vals` feature is on by default**, so `graft`, `graft_map`,
   `make_map`, `take_map`, `join_map_into`, `meet_into` and `subtract_into` handle
   the focus value in a separate step — while `join_into` does not.  The model
@@ -126,7 +141,7 @@ focus, such that ..." — instead of as a node walk.
 | file | contents |
 | --- | --- |
 | `PathMapModel/Basic.lean` | paths, the prefix and lexicographic orders, `ByteMask`, `ValOps`/`ValRes` (the fragment of `Lattice`/`DistributiveLattice` the trie consumes, including the left-biased `u64` instance), `AlgebraicStatus` |
-| `PathMapModel/Trie.lean` | the trie, its four observations, sub-tries and grafting, point updates, pruning, and the trie-level `join` / `meet` / `sub` / `prestrict` / `drop_head` |
+| `PathMapModel/PathMap.lean` | what a trie *means*: the flat representation, its observations, sub-tries and grafting, point updates, pruning, and the trie-level `join` / `meet` / `sub` / `prestrict` / `drop_head` |
 | `PathMapModel/Zipper.lean` | the read API: `trait Zipper`, `ZipperValues`, `ZipperMoving`, `ZipperIteration`, `ZipperForking`, `ZipperAbsolutePath` |
 | `PathMapModel/Write.lean` | the write API: `ZipperWriting` in full |
 | `PathMapModel/Map.lean` | the `PathMap` surface, which is the zipper API applied at the root — plus `PathMap::restrict`, the one genuinely map-level operation |
@@ -240,7 +255,7 @@ What that cost the model, in full:
   the harness runs it as op 47 with a `Vec<u8>` observer and compares it byte for
   byte, and `Laws.descendUntilObservedExact` states the property.
 
-`ZipperWriting`, `Zipper` and `ZipperValues` are unchanged, so `Trie.lean`,
+`ZipperWriting`, `Zipper` and `ZipperValues` are unchanged, so `PathMap.lean`,
 `Write.lean` and `Map.lean` needed nothing.  Two proved laws were restated
 around the new return types, and one was added — `ascend_accounts`, that the
 count `ascend` reports is exactly the depth the focus lost, which is what a
@@ -265,7 +280,7 @@ observed behaviour rather than intent, and are the places to distrust:
 | `joinVal` / `meetVal` / `subVal` | follow `Option<V>`'s impls in `src/ring.rs` |
 | `Zip.prunePath` | stop depth determined empirically; the doc comment is wrong |
 | `Zip.toNextKPath` | deliberately follows the native `ReadZipper` over the trait default |
-| `Trie.dropHead` | "values at depth exactly `k` are lost" is observed, not documented |
+| `PathMap.dropHead` | "values at depth exactly `k` are lost" is observed, not documented |
 | `Zip.joinMapInto` | the short-circuit asymmetry with `join_into` is observed |
 | `Zip.meet2` | "never reports `Identity`" comes from a comment in the impl |
 | `Check.lean` fixtures | expected values copied from the crate's own passing tests |
@@ -311,7 +326,7 @@ are contaminated.
 **2. Naive oracles** (`Check.lean`) re-derive the same answer from a deliberately
 stupid, independent route.  `joinKeysOracle`, `meetKeysOracle` and
 `subKeysOracle` say which keys survive using set theory and nothing else — no
-`ValOps`, no `Trie`.  Where they agree with the real definitions, the `ring.rs`
+`ValOps`, no `PathMap`.  Where they agree with the real definitions, the `ring.rs`
 transcription is excluded as a source of error.  This is the same technique the
 crate's own `tests/pathmap_algebra_differential.rs` uses for `restrict`, where it
 caught a real `prestrict` bug.
@@ -414,7 +429,7 @@ operation -- matches its specification on all 300 cases of
 
 `pathmap` is a DAG: subtries are shared between paths, `graft` clones a
 refcounted pointer rather than the data, and writes go through copy-on-write.
-**The model has no notion of nodes at all** — a `Trie` is a flat map from paths
+**The model has no notion of nodes at all** — a `PathMap` is a flat map from paths
 to entries, so grafting the same subtrie into two places yields two independent
 copies by construction, and sharing is invisible.
 
