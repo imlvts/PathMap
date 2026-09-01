@@ -164,3 +164,33 @@ values): grafting at a strict prefix of an existing value's key inside a list no
 `abe/tw` below the value `abe/twelve_bytes`, builds a list node with a child at `w` in slot 0
 and the value `welve_bytes` in slot 1, which `validate_node` rejects as an ambiguous path.
 `tests/graft_repro.rs` holds the ignored repro.
+
+## Implemented: sparse byte nodes (P4)
+
+`src/sparse_byte_node.rs` holds up to 6 byte-keyed entries (sorted key bytes, an onward link and
+a value per entry) in one 64-byte block for zero-sized values (64 + 6 x size_of V otherwise),
+replacing the dense node's 64-byte header plus a separate `Vec` of 16-byte entries. It is
+created wherever a small ordinary byte node used to be: the list-node overflow (3 items) and the
+results of byte-node joins, meets, subtractions and restrictions; a seventh entry converts it
+back to a dense node. Traversal and mutation are native; set operations convert to a temporary
+dense node. Works for any `V` (not only zero-sized).
+
+| dataset | before (leaves) | with sparse nodes | change | sparse nodes | remaining dense |
+|---|---|---|---|---|---|
+| cities | 2610884 | 2097460 | -20% | 7093 | 1787 |
+| shakespeare words | 1795192 | 1397800 | -22% | 6005 | 744 |
+| shakespeare sentences | 12279696 | 10411152 | -15% | 26301 | 4407 |
+| big_logic paths | 8016568 | 7046600 | -12% | 15255 | 12 |
+| rand 16 B | 27852656 | 25577328 | -8% | 23233 | 41416 |
+| rand 32 B | 21498680 | 17911496 | -17% | 42189 | 6022 |
+| oeis, seq u64, rand u64 | | | 0 to +1% | few | (large byte nodes) |
+
+Cumulative against the pre-work baseline: cities 4215300 -> 2097460 (-50%), Shakespeare words
+2409104 -> 1397800 (-42%), sentences 16113680 -> 10411152 (-35%), big_logic 9578528 -> 7046600
+(-26%), rand u64 -67%, rand 16 B -46%, rand 32 B -35%, seq u64 -33%.
+
+Build time and peak RSS: sentences 0.16 s / 36 MB -> 0.14 s / 30 MB; rand 16 B 0.40 s / 85 MB
+-> 0.32 s / 58 MB. Miri passes on all leaf and sparse node tests.
+
+The remaining byte-node bytes are in nodes with 7 or more entries (rand u64: 65k dense nodes
+with 9 to 32 entries, 27 MB), where the 16-byte entry (P1, packed cofree) is the next lever.

@@ -1056,7 +1056,7 @@ impl<V: Clone + Send + Sync, A: Allocator> LineListNode<V, A> {
             }
         }
 
-        Err(replacement_node)
+        Err(replacement_node.shrink_byte_node())
     }
 
     /// Ensures that a node is valid by combining an illegal shared prefix between the keys if there is one
@@ -2522,6 +2522,11 @@ impl<V: Clone + Send + Sync, A: Allocator> TrieNode<V, A> for LineListNode<V, A>
                 self.pjoin_dyn(TaggedNodeRef::from_list(&full))
             },
             #[cfg(feature = "slim_ptrs")]
+            SPARSE_BYTE_NODE_TAG => {
+                let full = unsafe{ other.as_sparse_unchecked() }.to_dense();
+                self.pjoin_dyn(TaggedNodeRef::from_dense(&full))
+            },
+            #[cfg(feature = "slim_ptrs")]
             COMPACT_LEAF_TAG => {
                 let full = unsafe{ other.as_compact_unchecked() }.into_full();
                 self.pjoin_dyn(TaggedNodeRef::from_list(&full))
@@ -2541,6 +2546,13 @@ impl<V: Clone + Send + Sync, A: Allocator> TrieNode<V, A> for LineListNode<V, A>
             INLINE_LEAF_TAG => {
                 let full = unsafe{ other_node.as_inline_unchecked() }.into_full();
                 merge_into_list_nodes(self, &full)
+            },
+            #[cfg(feature = "slim_ptrs")]
+            SPARSE_BYTE_NODE_TAG => {
+                let mut new_node = unsafe{ other_node.as_sparse_unchecked() }.to_dense();
+                let status = new_node.merge_from_list_node(self);
+                debug_assert!(!status.is_none());
+                (AlgebraicStatus::Element, Err(TrieNodeODRc::from_byte_node(new_node, self.alloc.clone())))
             },
             #[cfg(feature = "slim_ptrs")]
             COMPACT_LEAF_TAG => {
@@ -3081,7 +3093,8 @@ mod tests {
         assert_eq!(new_node.node_set_val("apple".as_bytes(), 1).map_err(|_| 0), Ok((None, false)));
         assert_eq!(new_node.node_set_val("banana".as_bytes(), 2).map_err(|_| 0), Ok((None, false)));
         let replacement_node = new_node.node_set_val("carrot".as_bytes(), 3).unwrap_err();
-        assert_eq!(replacement_node.tag(), DENSE_BYTE_NODE_TAG);// else { panic!("expected node would be a byte node"); }
+        // Three entries fit a sparse byte node; a dense node is the fallback when sparse nodes are disabled
+        assert!(replacement_node.tag() == DENSE_BYTE_NODE_TAG || replacement_node.tag() == SPARSE_BYTE_NODE_TAG);
         let (bytes_used, child_node) = replacement_node.as_tagged().node_get_child("apple".as_bytes()).unwrap();
         let child_node = child_node.as_tagged();
         assert_eq!(bytes_used, 1);
