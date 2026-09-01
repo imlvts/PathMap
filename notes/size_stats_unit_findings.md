@@ -1,10 +1,53 @@
-# PathMap<()> node footprint: measurements and candidate size optimizations
+# PathMap<()> node footprint: measurements and size optimizations
 
 Measured 2026-09-01 with `cargo run --release --features counters --example size_stats`
 (module `src/size_stats.rs`). The structural walk matches a counting global allocator to
-within 4 bytes on every dataset, so the per-node-type breakdown below is the real heap.
+within 4 bytes on every dataset, so the per-node-type breakdown is the real heap.
 
-## Layout today (slim_ptrs, x86_64, V = ())
+## Status (branch `unit-size`, commits 2fe3a94..e67404c)
+
+Node types a `PathMap<()>` uses now, all behind `slim_ptrs` and not `slim_dispatch`:
+
+| node | tag | block | holds |
+|---|---|---|---|
+| InlineLeafNode (`src/inline_leaf_node.rs`) | 5 | 0 B, lives in the parent's pointer word | one path of 1-7 key bytes ending in a unit value, or dangling |
+| CompactLeafNode (`src/compact_leaf_node.rs`) | 6 | 8 B header + key bytes, rounded to 8 | one path of 8-42 key bytes ending in a unit value, or dangling |
+| SparseByteNode (`src/sparse_byte_node.rs`) | 7 | 64 B (+ values for non-unit V) | up to 6 byte-keyed entries, any V |
+| UnitByteNode (`src/unit_byte_node.rs`) | 8 | 96 B header + 8 B per child | 7-256 byte-keyed entries, unit values only, native mask algebra |
+| LineListNode | 2 | 64 B | chains (single child) and two-payload nodes |
+| DenseByteNode / CellByteNode | 1 / 3 | 64 B + 16 B per entry | non-unit values; cell nodes for zipper heads |
+
+Unit tries contain no value-only list nodes and no dense nodes. The dense node's `Vec`
+growth is clamped at 256 entries for every `V`.
+
+Cumulative heap bytes against the pre-work baseline (`master` 2192ebc):
+
+| dataset | baseline | now | change |
+|---|---|---|---|
+| cities (52883 names) | 4215300 | 1927684 | -54% |
+| shakespeare words | 2409104 | 1326072 | -45% |
+| shakespeare sentences | 16113680 | 9990712 | -38% |
+| oeis (100k lines) | 35411907 | 31679787 | -11% |
+| big_logic.metta.paths | 9578528 | 7046256 | -26% |
+| seq u64, 1M | 24345280 | 408608 | -98% |
+| rand u64, 1M | 89377408 | 19706488 | -78% |
+| rand 16 B, 500k | 47202016 | 22248992 | -53% |
+| rand 32 B, 250k | 27691360 | 17115024 | -38% |
+| rand 128 B, 100k | 24633968 | 21718792 | -12% |
+
+Build times are equal or shorter everywhere (rand u64 0.83 s -> 0.42 s). Verified by the full
+test suite in release and debug, doctests, all feature combinations, and Miri on every new node
+test. Two pre-existing bugs surfaced: `ByteMask::clear_bit` toggled instead of clearing (fixed
+in e67404c) and a list-node graft below a value prefix builds an invalid node (ignored repro in
+`tests/graft_repro.rs`, not fixed).
+
+Open items: unit byte node child `Vec` grows by doubling (72% used on random u64 keys); list-node
+chains (single child, path compression) are now the largest list-node share on every dataset and
+would take a single-path node with an onward link (leaf header + 8 B child pointer after the key).
+
+The sections below are the chronological record of the measurements and decisions.
+
+## Layout before this work (slim_ptrs, x86_64, V = ())
 
 | type | block | notes |
 |---|---|---|
@@ -53,7 +96,7 @@ P2. `ByteNode::insert_cf` (dense_byte_node.rs) grows the entries Vec by doubling
 but never past 256 entries. Full nodes now have capacity == 256. Effect: seq_u64 -33%,
 rand_16b -1.1%, rand_u64 -0.6%, natural-language sets ~0.
 
-## Candidates, projected from the measured shape histograms
+## Candidates, projected from the measured shape histograms (historical; P1 through P7 are now implemented, P5 is not)
 
 Projected requested bytes as % of the measured layout (`SizeStats::projections`):
 
