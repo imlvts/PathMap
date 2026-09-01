@@ -123,6 +123,19 @@ impl<V: Clone + Send + Sync, A: Allocator, Cf: CoFree<V=V, A=A>> ByteNode<Cf, A>
     pub fn reserve_capacity(&mut self, additional: usize) {
         self.values.reserve(additional)
     }
+    /// Inserts an entry at `ix`, growing the entries vector without overshooting the 256 entries a
+    /// byte node can hold. `Vec::insert` alone doubles from the initial capacity (3, 6, 12, ..., 192,
+    /// 384), leaving every full node with 128 dead entries.
+    #[inline]
+    fn insert_cf(&mut self, ix: usize, cf: Cf) {
+        let len = self.values.len();
+        if len == self.values.capacity() {
+            // Mirror Vec's own amortised growth (double, minimum 4) up to the 256-entry ceiling
+            let additional = (256 - len).min(if len == 0 { 4 } else { len });
+            self.values.reserve_exact(additional);
+        }
+        self.values.insert(ix, cf);
+    }
     /// Adds a new child at the specified key byte.  Replaces and returns an existing branch.
     /// Use [join_child_into] to join with the existing branch
     #[inline]
@@ -134,7 +147,7 @@ impl<V: Clone + Send + Sync, A: Allocator, Cf: CoFree<V=V, A=A>> ByteNode<Cf, A>
         } else {
             self.mask.set_bit(k);
             let new_cf = CoFree::new(Some(node), None);
-            self.values.insert(ix, new_cf);
+            self.insert_cf(ix, new_cf);
             None
         }
     }
@@ -158,7 +171,7 @@ impl<V: Clone + Send + Sync, A: Allocator, Cf: CoFree<V=V, A=A>> ByteNode<Cf, A>
         } else {
             self.mask.set_bit(k);
             let new_cf = CoFree::new(Some(node), None);
-            self.values.insert(ix, new_cf);
+            self.insert_cf(ix, new_cf);
             AlgebraicStatus::Element
         }
     }
@@ -172,7 +185,7 @@ impl<V: Clone + Send + Sync, A: Allocator, Cf: CoFree<V=V, A=A>> ByteNode<Cf, A>
         } else {
             self.mask.set_bit(k);
             let new_cf = CoFree::new(None, Some(val));
-            self.values.insert(ix, new_cf);
+            self.insert_cf(ix, new_cf);
             None
         }
     }
@@ -203,7 +216,7 @@ impl<V: Clone + Send + Sync, A: Allocator, Cf: CoFree<V=V, A=A>> ByteNode<Cf, A>
         } else {
             self.mask.set_bit(k);
             let new_cf = CoFree::new(None, None);
-            self.values.insert(ix, new_cf);
+            self.insert_cf(ix, new_cf);
             true
         }
     }
@@ -226,7 +239,7 @@ impl<V: Clone + Send + Sync, A: Allocator, Cf: CoFree<V=V, A=A>> ByteNode<Cf, A>
         } else {
             self.mask.set_bit(k);
             let new_cf = CoFree::new(None, Some(val));
-            self.values.insert(ix, new_cf);
+            self.insert_cf(ix, new_cf);
             AlgebraicStatus::Element
         }
     }
@@ -587,7 +600,7 @@ impl<V: Clone + Send + Sync, A: Allocator> CellByteNode<V, A> {
                 let ix = self.mask.index_of(k) as usize;
                 self.mask.set_bit(k);
                 let new_cf = CellCoFree::new(None, None);
-                self.values.insert(ix, new_cf);
+                self.insert_cf(ix, new_cf);
             }
         }
         let cf = self.get_mut(k).unwrap();
@@ -2467,4 +2480,44 @@ fn byte_node_iter_token_crosses_mask_word_boundaries() {
         }
     }
     assert_eq!(visited_after_missing_65, [127, 128, 191, 192, 255]);
+}
+
+
+/// Per-node slot statistics used by [crate::size_stats]
+#[cfg(feature = "counters")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CoFreeSlotStats {
+    /// Number of occupied entries (equal to the population count of the mask)
+    pub len: usize,
+    /// Allocated capacity of the entries vector
+    pub capacity: usize,
+    /// Entries with an onward link but no value
+    pub rec_only: usize,
+    /// Entries with a value but no onward link
+    pub val_only: usize,
+    /// Entries with both a value and an onward link
+    pub both: usize,
+    /// Entries with neither (should be zero in a well-formed node)
+    pub neither: usize,
+}
+
+#[cfg(feature = "counters")]
+impl<V: Clone + Send + Sync, A: Allocator, Cf: CoFree<V=V, A=A>> ByteNode<Cf, A> {
+    /// Returns occupancy statistics for the entries vector
+    pub fn cofree_slot_stats(&self) -> CoFreeSlotStats {
+        let mut stats = CoFreeSlotStats {
+            len: self.values.len(),
+            capacity: self.values.capacity(),
+            ..Default::default()
+        };
+        for cf in self.values.iter() {
+            match (cf.has_rec(), cf.has_val()) {
+                (true, false) => stats.rec_only += 1,
+                (false, true) => stats.val_only += 1,
+                (true, true) => stats.both += 1,
+                (false, false) => stats.neither += 1,
+            }
+        }
+        stats
+    }
 }

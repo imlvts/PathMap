@@ -114,6 +114,10 @@ pub mod random;
 #[cfg(feature = "counters")]
 pub mod counters;
 
+/// Measures the memory footprint and byte occupancy of a trie's nodes, for finding size optimizations
+#[cfg(all(feature = "counters", not(feature = "slim_dispatch")))]
+pub mod size_stats;
+
 /// Feature for code instrumentation and optimization
 pub mod timed_span;
 

@@ -145,3 +145,8 @@ required-features = ["arena_compact", "serialization"]
 [workspace]
 members = ["pathmap-derive", "examples/sampling", "examples/arena_compact_tests"]
 resolver = "2"
+
+# Memory footprint / byte-occupancy report over several datasets; see src/size_stats.rs
+[[example]]
+name = "size_stats"
+required-features = ["counters"]
