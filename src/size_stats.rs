@@ -1,9 +1,10 @@
-//! Memory footprint and byte-occupancy measurement for a [PathMap]'s node graph.
+//! Memory footprint and physical useful/unused-byte measurement for a [PathMap]'s node graph.
 //!
 //! [SizeStats::measure] walks every reachable node once (nodes shared between several parents
 //! are counted a single time) and records, per node type, how many nodes exist, how many bytes
-//! they request from the allocator, and how much of that space carries information (key bytes,
-//! onward links, values) versus padding, unused slots, or spare `Vec` capacity.
+//! they request from the allocator, and how much of that space carries useful representation
+//! fields (pointers, keys, masks, lengths, flags) versus padding, unused slots, or spare `Vec`
+//! capacity.
 //!
 //! Two views of size are reported:
 //! - **requested bytes**: the sum of `size_of` for every heap block a node owns (its own box,
@@ -19,7 +20,7 @@ use core::mem::size_of;
 
 use crate::PathMap;
 use crate::alloc::Allocator;
-use crate::trie_node::{TaggedNodeRef, TrieNode, TrieNodeODRc};
+use crate::trie_node::{TaggedNodeRef, TrieNode, TrieNodeODRc, ValOrChildUnion};
 use crate::line_list_node::{LineListNode, KEY_BYTES_CNT};
 use crate::dense_byte_node::{CoFreeSlotStats, DenseByteNode, CellByteNode, OrdinaryCoFree, CellCoFree};
 
@@ -74,6 +75,10 @@ pub struct KindStats {
     pub allocations: usize,
     /// Bytes requested from the allocator for all blocks owned by nodes of this kind
     pub requested_bytes: usize,
+    /// Physical bytes in owned blocks that carry live representation fields or payload
+    pub useful_bytes: usize,
+    /// Physical bytes in owned blocks that are padding, spare capacity, or unoccupied storage
+    pub unused_bytes: usize,
     /// [requested_bytes](Self::requested_bytes) after glibc chunk rounding
     pub malloc_bytes: usize,
     /// [requested_bytes](Self::requested_bytes) after jemalloc size-class rounding
@@ -84,13 +89,25 @@ pub struct KindStats {
     pub child_links: usize,
     /// Values held by nodes of this kind
     pub values: usize,
+    /// Bytes occupied by inline representations in a parent pointer word. These are not owned
+    /// allocations and are therefore excluded from `requested_bytes`, `useful_bytes`, and
+    /// `unused_bytes`.
+    pub embedded_bytes: usize,
+    /// Useful bytes in the embedded representation, reported separately to avoid double-counting
+    /// the parent pointer word in the heap totals.
+    pub embedded_useful_bytes: usize,
+    /// Unused bytes in the embedded representation, reported separately for the same reason.
+    pub embedded_unused_bytes: usize,
 }
 
 impl KindStats {
-    fn add_block(&mut self, requested: usize) {
+    fn add_block_with_useful(&mut self, requested: usize, useful: usize) {
         if requested > 0 {
             self.allocations += 1;
             self.requested_bytes += requested;
+            debug_assert!(useful <= requested);
+            self.useful_bytes += useful;
+            self.unused_bytes += requested - useful;
             self.malloc_bytes += glibc_chunk_size(requested);
             self.jemalloc_bytes += jemalloc_size_class(requested);
         }
@@ -171,7 +188,7 @@ impl Layout {
     }
 }
 
-/// Footprint and occupancy figures for one trie
+/// Footprint and physical useful/unused-byte figures for one trie
 #[derive(Clone, Debug)]
 pub struct SizeStats {
     /// Totals for [LineListNode]s
@@ -180,8 +197,8 @@ pub struct SizeStats {
     pub dense: KindStats,
     /// Totals for [CellByteNode]s
     pub cell: KindStats,
-    /// Totals for inline leaves (see [crate::inline_leaf_node]); they own no heap blocks, so only
-    /// `nodes`, `key_bytes` and `values` are populated
+    /// Totals for inline leaves (see [crate::inline_leaf_node]); they own no heap blocks. Their
+    /// allocation-neutral 8-byte parent-word representation is in the embedded fields.
     pub inline: KindStats,
     /// Totals for compact leaves (see [crate::compact_leaf_node]), one block each
     pub compact: KindStats,
@@ -308,6 +325,30 @@ impl SizeStats {
         }
     }
 
+    /// Useful bytes in one parent word that carries a child reference. An inline leaf uses the
+    /// same physical word but only its key bytes and one control byte are live; ordinary child
+    /// references use the whole pointer word.
+    fn child_word_useful<V: Clone + Send + Sync, A: Allocator>(child: &TrieNodeODRc<V, A>) -> usize {
+        #[cfg(feature = "slim_ptrs")]
+        {
+            use crate::single_path_leaf::SinglePathLeaf;
+            if let TaggedNodeRef::InlineLeaf(leaf) = child.as_tagged() {
+                return leaf.key().len() + 1;
+            }
+        }
+        size_of::<TrieNodeODRc<V, A>>()
+    }
+
+    fn child_words_useful<'a, V: Clone + Send + Sync, A: Allocator, N: TrieNode<V, A> + ?Sized>(node: &'a N) -> usize {
+        let (mut token, mut child) = node.node_child_iter_start();
+        let mut useful = 0;
+        while let Some(c) = child {
+            useful += Self::child_word_useful(c);
+            (token, child) = node.node_child_iter_next(token);
+        }
+        useful
+    }
+
     fn count_node<V: Clone + Send + Sync, A: Allocator>(&mut self, node: &TaggedNodeRef<V, A>) {
         match node {
             TaggedNodeRef::LineListNode(list) => self.count_list(list),
@@ -330,27 +371,35 @@ impl SizeStats {
     fn count_list<V: Clone + Send + Sync, A: Allocator>(&mut self, node: &LineListNode<V, A>) {
         let k = &mut self.list;
         k.nodes += 1;
-        k.add_block(size_of::<LineListNode<V, A>>());
         let values_before = k.values;
+        let mut useful = if cfg!(feature = "slim_ptrs") { size_of::<u32>() } else { 0 };
+        useful += size_of::<u16>();
         let shape = ListShape::from_node(node);
         self.list_shape_hist[shape.index()] += 1;
         let (key0, key1) = node.get_both_keys();
-        let record_slot = |used: bool, is_child: bool, key: &[u8], k: &mut KindStats, hist: &mut [usize; KEY_BYTES_CNT + 1]| {
+        let record_slot = |used: bool, is_child: bool, key: &[u8], k: &mut KindStats, hist: &mut [usize; KEY_BYTES_CNT + 1], useful: &mut usize| {
             if !used { return; }
             hist[key.len().min(KEY_BYTES_CNT)] += 1;
             k.key_bytes += key.len();
+            *useful += key.len();
             if is_child {
                 k.child_links += 1;
             } else {
                 k.values += 1;
+                if size_of::<V>() > 0 {
+                    *useful += if size_of::<V>() <= 8 { size_of::<V>() } else { size_of::<ValOrChildUnion<V, A>>() };
+                }
                 if size_of::<V>() > 8 {
                     // LocalOrHeap spills values larger than its 8-byte inline buffer to the heap
-                    k.add_block(size_of::<V>());
+                    k.add_block_with_useful(size_of::<V>(), size_of::<V>());
                 }
             }
         };
-        record_slot(node.is_used::<0>(), node.is_child_ptr::<0>(), key0, k, &mut self.list_key_len_hist);
-        record_slot(node.is_used::<1>(), node.is_child_ptr::<1>(), key1, k, &mut self.list_key_len_hist);
+        record_slot(node.is_used::<0>(), node.is_child_ptr::<0>(), key0, k, &mut self.list_key_len_hist, &mut useful);
+        record_slot(node.is_used::<1>(), node.is_child_ptr::<1>(), key1, k, &mut self.list_key_len_hist, &mut useful);
+        // Actual child words may be compact inline-leaf representations.
+        useful += Self::child_words_useful(node);
+        k.add_block_with_useful(size_of::<LineListNode<V, A>>(), useful);
         match shape {
             ListShape::Child => { self.list_chain_nodes += 1; self.list_chain_key_len_hist[key0.len().min(KEY_BYTES_CNT)] += 1; },
             ListShape::Val => { self.list_leaf_nodes += 1; self.list_leaf_key_len_hist[key0.len().min(KEY_BYTES_CNT)] += 1; },
@@ -365,6 +414,11 @@ impl SizeStats {
         let k = &mut self.inline;
         k.nodes += 1;
         k.key_bytes += node.key().len();
+        // Inline leaves occupy the parent's 8-byte pointer word. Keep this attribution separate:
+        // the parent allocation receives the same useful/unused split for that physical word.
+        k.embedded_bytes += size_of::<u64>();
+        k.embedded_useful_bytes += node.key().len() + 1; // key bytes plus the length/tag/value byte
+        k.embedded_unused_bytes += 7 - node.key().len();
         if node.has_val() {
             k.values += 1;
             self.value_count += 1;
@@ -376,8 +430,10 @@ impl SizeStats {
         use crate::single_path_leaf::SinglePathLeaf;
         let k = &mut self.compact;
         k.nodes += 1;
-        k.add_block(node.size());
         k.key_bytes += node.key().len();
+        // Refcount, flags, logical length, and capacity are useful. The explicit header pad,
+        // trailing alignment, and key capacity beyond the logical length are not.
+        k.add_block_with_useful(node.size(), 4 + 1 + 1 + 1 + node.key().len());
         if node.has_val() {
             k.values += 1;
             self.value_count += 1;
@@ -388,7 +444,6 @@ impl SizeStats {
     fn count_sparse<V: Clone + Send + Sync, A: Allocator>(&mut self, node: &crate::sparse_byte_node::SparseByteNode<V, A>) {
         let k = &mut self.sparse;
         k.nodes += 1;
-        k.add_block(size_of::<crate::sparse_byte_node::SparseByteNode<V, A>>());
         let entries = node.entry_count();
         k.key_bytes += entries;
         let (mut token, mut child) = node.node_child_iter_start();
@@ -399,6 +454,14 @@ impl SizeStats {
         let values = node.node_goat_val_count();
         k.values += values;
         self.value_count += values;
+        // Refcount + len + value mask + child mask; the remaining fields are live only for
+        // occupied keys, onward pointers, and non-ZST values.
+        let useful = if cfg!(feature = "slim_ptrs") { size_of::<u32>() } else { 0 }
+            + 3 * size_of::<u8>()
+            + entries
+            + Self::child_words_useful(node)
+            + values * size_of::<V>();
+        k.add_block_with_useful(size_of::<crate::sparse_byte_node::SparseByteNode<V, A>>(), useful);
         self.sparse_entries_hist[entries.min(6)] += 1;
     }
 
@@ -406,9 +469,16 @@ impl SizeStats {
     fn count_unit<V: Clone + Send + Sync, A: Allocator>(&mut self, node: &crate::unit_byte_node::UnitByteNode<V, A>) {
         let k = &mut self.unit;
         k.nodes += 1;
-        k.add_block(size_of::<crate::unit_byte_node::UnitByteNode<V, A>>());
         let (children, capacity) = node.children_len_capacity();
-        k.add_block(capacity * size_of::<TrieNodeODRc<V, A>>());
+        // Refcount + two 256-bit masks + Vec descriptor. The 4-byte tail is alignment padding.
+        let useful = if cfg!(feature = "slim_ptrs") { size_of::<u32>() } else { 0 }
+            + 2 * size_of::<crate::utils::ByteMask>()
+            + size_of::<Vec<TrieNodeODRc<V, A>>>();
+        k.add_block_with_useful(size_of::<crate::unit_byte_node::UnitByteNode<V, A>>(), useful);
+        k.add_block_with_useful(
+            capacity * size_of::<TrieNodeODRc<V, A>>(),
+            Self::child_words_useful(node),
+        );
         self.unit_child_capacity += capacity;
         k.key_bytes += node.entry_count();
         k.child_links += children;
@@ -422,8 +492,15 @@ impl SizeStats {
         let slots = node.cofree_slot_stats();
         let k = &mut self.dense;
         k.nodes += 1;
-        k.add_block(size_of::<DenseByteNode<V, A>>());
-        k.add_block(slots.capacity * size_of::<OrdinaryCoFree<V, A>>());
+        let header_useful = if cfg!(feature = "slim_ptrs") { size_of::<u32>() } else { 0 }
+            + size_of::<crate::utils::ByteMask>()
+            + size_of::<Vec<OrdinaryCoFree<V, A>>>();
+        k.add_block_with_useful(size_of::<DenseByteNode<V, A>>(), header_useful);
+        let child_count = slots.rec_only + slots.both;
+        let entry_useful = (slots.len - child_count) * size_of::<Option<TrieNodeODRc<V, A>>>()
+            + Self::child_words_useful(node)
+            + slots.len * size_of::<Option<V>>();
+        k.add_block_with_useful(slots.capacity * size_of::<OrdinaryCoFree<V, A>>(), entry_useful);
         Self::fold_slots(k, &mut self.dense_slots, &mut self.dense_items_hist, &mut self.dense_overallocated_nodes, &slots);
         self.dense_items_exact[slots.len.min(256)] += 1;
         *self.dense_len_cap_hist.entry((slots.len, slots.capacity)).or_insert(0) += 1;
@@ -439,10 +516,19 @@ impl SizeStats {
         let slots = node.cofree_slot_stats();
         let k = &mut self.cell;
         k.nodes += 1;
-        k.add_block(size_of::<CellByteNode<V, A>>());
-        k.add_block(slots.capacity * size_of::<CellCoFree<V, A>>());
+        let header_useful = if cfg!(feature = "slim_ptrs") { size_of::<u32>() } else { 0 }
+            + size_of::<crate::utils::ByteMask>()
+            + size_of::<Vec<CellCoFree<V, A>>>();
+        k.add_block_with_useful(size_of::<CellByteNode<V, A>>(), header_useful);
+        k.add_block_with_useful(
+            slots.capacity * size_of::<CellCoFree<V, A>>(),
+            slots.len * size_of::<CellCoFree<V, A>>(),
+        );
         for _ in 0..slots.len {
-            k.add_block(size_of::<OrdinaryCoFree<V, A>>());
+            k.add_block_with_useful(
+                size_of::<OrdinaryCoFree<V, A>>(),
+                size_of::<Option<TrieNodeODRc<V, A>>>() + size_of::<Option<V>>(),
+            );
         }
         Self::fold_slots(k, &mut self.dense_slots, &mut self.dense_items_hist, &mut self.dense_overallocated_nodes, &slots);
         self.dense_items_exact[slots.len.min(256)] += 1;
@@ -481,9 +567,32 @@ impl SizeStats {
     pub fn total_allocations(&self) -> usize {
         self.list.allocations + self.dense.allocations + self.cell.allocations + self.compact.allocations + self.sparse.allocations + self.unit.allocations
     }
-    /// Total bytes requested from the allocator
+    /// Total bytes requested from the allocator for node-owned blocks
     pub fn total_requested_bytes(&self) -> usize {
         self.list.requested_bytes + self.dense.requested_bytes + self.cell.requested_bytes + self.compact.requested_bytes + self.sparse.requested_bytes + self.unit.requested_bytes
+    }
+    /// Total useful bytes in node-owned blocks
+    pub fn total_useful_bytes(&self) -> usize {
+        self.list.useful_bytes + self.dense.useful_bytes + self.cell.useful_bytes + self.compact.useful_bytes + self.sparse.useful_bytes + self.unit.useful_bytes
+    }
+    /// Total unused bytes in node-owned blocks
+    pub fn total_unused_bytes(&self) -> usize {
+        self.list.unused_bytes + self.dense.unused_bytes + self.cell.unused_bytes + self.compact.unused_bytes + self.sparse.unused_bytes + self.unit.unused_bytes
+    }
+    /// Total bytes represented by inline leaves in parent pointer words. This is not added to
+    /// [total_requested_bytes](Self::total_requested_bytes), since those words are already part
+    /// of their parent node allocations.
+    pub fn total_embedded_bytes(&self) -> usize {
+        self.inline.embedded_bytes
+    }
+    /// Useful bytes in inline leaf parent-word representations, reported separately to avoid
+    /// double-counting the parent word.
+    pub fn total_embedded_useful_bytes(&self) -> usize {
+        self.inline.embedded_useful_bytes
+    }
+    /// Unused bytes in inline leaf parent-word representations.
+    pub fn total_embedded_unused_bytes(&self) -> usize {
+        self.inline.embedded_unused_bytes
     }
     /// Total bytes after glibc chunk rounding
     pub fn total_malloc_bytes(&self) -> usize {
@@ -501,15 +610,6 @@ impl SizeStats {
     pub fn total_child_links(&self) -> usize {
         self.list.child_links + self.dense.child_links + self.cell.child_links + self.compact.child_links + self.sparse.child_links + self.unit.child_links
     }
-    /// Fraction of requested bytes that are key bytes
-    pub fn key_byte_occupancy(&self) -> f64 {
-        self.total_key_bytes() as f64 / self.total_requested_bytes().max(1) as f64
-    }
-    /// Fraction of the list nodes' key buffers that hold key bytes
-    pub fn list_key_buffer_occupancy(&self) -> f64 {
-        self.list.key_bytes as f64 / (self.list.nodes * KEY_BYTES_CNT).max(1) as f64
-    }
-
     /// Projects the footprint under a set of candidate layout changes. Each projection is
     /// computed from the histograms gathered by [measure](Self::measure), so it reflects this
     /// trie's actual shape distribution rather than a synthetic model. Cell nodes are carried
@@ -644,23 +744,28 @@ impl SizeStats {
         let pct = |num: usize, den: usize| if den == 0 { 0.0 } else { 100.0 * num as f64 / den as f64 };
         let per_val = |num: usize| if self.value_count == 0 { 0.0 } else { num as f64 / self.value_count as f64 };
 
-        let _ = writeln!(out, "values: {}  (size_of V = {})   key bytes: {}   child links: {}   nodes: {}   shared nodes: {} (+{} extra refs)",
+        let _ = writeln!(out, "values: {}  (size_of V = {})   logical key bytes (diagnostic): {}   child links: {}   nodes: {}   shared nodes: {} (+{} extra refs)",
             self.value_count, self.value_size, self.total_key_bytes(), self.total_child_links(), self.total_nodes(), self.shared_nodes, self.shared_extra_refs);
-        let _ = writeln!(out, "allocations: {}   requested: {} B   glibc est: {} B   jemalloc est: {} B   bytes/value: {:.1} req, {:.1} glibc   key-byte occupancy: {:.1}%",
-            self.total_allocations(), self.total_requested_bytes(), self.total_malloc_bytes(), self.total_jemalloc_bytes(),
-            per_val(self.total_requested_bytes()), per_val(self.total_malloc_bytes()), 100.0 * self.key_byte_occupancy());
-        let _ = writeln!(out, "{:<6} {:>9} {:>9} {:>6} {:>12} {:>6} {:>12} {:>10} {:>9} {:>8} {:>9}",
-            "kind", "nodes", "allocs", "%nodes", "req_bytes", "%req", "malloc_bytes", "key_bytes", "children", "values", "B/keybyte");
+        let _ = writeln!(out, "node-owned allocations: {}   requested: {} B   useful: {} B ({:.1}%)   unused: {} B ({:.1}%)   glibc est: {} B   jemalloc est: {} B",
+            self.total_allocations(), self.total_requested_bytes(),
+            self.total_useful_bytes(), 100.0 * self.total_useful_bytes() as f64 / self.total_requested_bytes().max(1) as f64,
+            self.total_unused_bytes(), 100.0 * self.total_unused_bytes() as f64 / self.total_requested_bytes().max(1) as f64,
+            self.total_malloc_bytes(), self.total_jemalloc_bytes());
+        let _ = writeln!(out, "  bytes/value: {:.1} requested, {:.1} useful, {:.1} unused   inline embedded: {} B = {} useful + {} unused (already inside parent words)",
+            per_val(self.total_requested_bytes()), per_val(self.total_useful_bytes()), per_val(self.total_unused_bytes()),
+            self.total_embedded_bytes(), self.total_embedded_useful_bytes(), self.total_embedded_unused_bytes());
+        let _ = writeln!(out, "{:<8} {:>9} {:>9} {:>12} {:>12} {:>12} {:>7} {:>9} {:>8}",
+            "kind", "nodes", "allocs", "requested B", "useful B", "unused B", "useful%", "children", "values");
         for (name, k) in [("list", &self.list), ("dense", &self.dense), ("cell", &self.cell), ("inline", &self.inline), ("compact", &self.compact), ("sparse", &self.sparse), ("unit", &self.unit)] {
             if k.nodes == 0 { continue; }
-            let _ = writeln!(out, "{:<6} {:>9} {:>9} {:>5.1}% {:>12} {:>5.1}% {:>12} {:>10} {:>9} {:>8} {:>9.1}",
-                name, k.nodes, k.allocations, pct(k.nodes, self.total_nodes()), k.requested_bytes, pct(k.requested_bytes, self.total_requested_bytes()),
-                k.malloc_bytes, k.key_bytes, k.child_links, k.values, k.requested_bytes as f64 / k.key_bytes.max(1) as f64);
+            let _ = writeln!(out, "{:<8} {:>9} {:>9} {:>12} {:>12} {:>12} {:>6.1}% {:>9} {:>8}",
+                name, k.nodes, k.allocations, k.requested_bytes, k.useful_bytes, k.unused_bytes,
+                pct(k.useful_bytes, k.requested_bytes), k.child_links, k.values);
         }
 
         if self.list.nodes > 0 {
-            let _ = writeln!(out, "list nodes: key buffer occupancy {:.1}% ({} of {} B)   chain (single child): {} ({:.1}%)   leaf (single value): {} ({:.1}%)",
-                100.0 * self.list_key_buffer_occupancy(), self.list.key_bytes, self.list.nodes * KEY_BYTES_CNT,
+            let _ = writeln!(out, "list nodes: logical key bytes {}   chain (single child): {} ({:.1}%)   leaf (single value): {} ({:.1}%)",
+                self.list.key_bytes,
                 self.list_chain_nodes, pct(self.list_chain_nodes, self.list.nodes), self.list_leaf_nodes, pct(self.list_leaf_nodes, self.list.nodes));
             let _ = write!(out, "  shape:");
             for shape in ListShape::ALL {
@@ -788,6 +893,10 @@ mod tests {
         assert_eq!(stats.dense_items_hist.iter().sum::<usize>(), stats.dense.nodes);
         assert!(stats.dense_slots.capacity >= stats.dense_slots.len);
         assert!(stats.total_requested_bytes() >= (stats.list.nodes + stats.dense.nodes + stats.cell.nodes) * 64);
+        assert_eq!(stats.total_useful_bytes() + stats.total_unused_bytes(), stats.total_requested_bytes());
+        for kind in [stats.list, stats.dense, stats.cell, stats.inline, stats.compact, stats.sparse, stats.unit] {
+            assert_eq!(kind.useful_bytes + kind.unused_bytes, kind.requested_bytes);
+        }
         assert_eq!(stats.inline.allocations, 0);
         // The projection machinery must reproduce the measured baseline exactly
         let base = &stats.projections()[0];
@@ -835,6 +944,8 @@ mod tests {
         assert_eq!(stats.unit.nodes, 1);
         assert_eq!(stats.unit.values, 256);
         assert_eq!(stats.unit.requested_bytes, 96);
+        assert_eq!(stats.unit.useful_bytes, 92);
+        assert_eq!(stats.unit.unused_bytes, 4);
         assert_eq!(stats.value_count, 256);
     }
 

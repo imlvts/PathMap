@@ -169,13 +169,16 @@ fn main() {
         print!("{}", stats.projection_report());
         println!();
         projection_rows.push((name.to_string(), stats.projections()));
-        summary.push((name.to_string(), stats.value_count, stats.total_nodes(), stats.list.nodes, stats.dense.nodes, live_bytes, stats.total_malloc_bytes(), stats.total_key_bytes(), stats.list_chain_nodes, stats.list_leaf_nodes));
+        summary.push((name.to_string(), stats.value_count, stats.total_nodes(), stats.list.nodes,
+            stats.dense.nodes + stats.cell.nodes + stats.sparse.nodes + stats.unit.nodes,
+            live_bytes, stats.total_requested_bytes(), stats.total_useful_bytes(), stats.total_unused_bytes(),
+            stats.list_chain_nodes, stats.list_leaf_nodes));
         drop(map);
     }
-    println!("{:<22} {:>9} {:>9} {:>9} {:>8} {:>12} {:>12} {:>10} {:>8} {:>8} {:>8}", "dataset", "values", "nodes", "list", "dense", "heap_bytes", "malloc_est", "key_bytes", "B/value", "chain%", "leaf%");
-    for (name, values, nodes, list, dense, heap, malloc, key_bytes, chain, leaf) in &summary {
-        println!("{:<22} {:>9} {:>9} {:>9} {:>8} {:>12} {:>12} {:>10} {:>8.1} {:>7.1}% {:>7.1}%", name, values, nodes, list, dense, heap, malloc, key_bytes,
-            *heap as f64 / (*values).max(1) as f64, 100.0 * *chain as f64 / (*list).max(1) as f64, 100.0 * *leaf as f64 / (*list).max(1) as f64);
+    println!("{:<22} {:>9} {:>9} {:>9} {:>11} {:>12} {:>12} {:>12} {:>12} {:>8} {:>8}", "dataset", "values", "nodes", "list", "byte_nodes", "heap_bytes", "requested", "useful", "unused", "chain%", "leaf%");
+    for (name, values, nodes, list, byte_nodes, heap, requested, useful, unused, chain, leaf) in &summary {
+        println!("{:<22} {:>9} {:>9} {:>9} {:>11} {:>12} {:>12} {:>12} {:>12} {:>7.1}% {:>7.1}%", name, values, nodes, list, byte_nodes, heap, requested, useful, unused,
+            100.0 * *chain as f64 / (*list).max(1) as f64, 100.0 * *leaf as f64 / (*list).max(1) as f64);
     }
     if let Some((_, first)) = projection_rows.first() {
         println!();

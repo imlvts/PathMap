@@ -4,6 +4,13 @@ Measured 2026-09-01 with `cargo run --release --features counters --example size
 (module `src/size_stats.rs`). The structural walk matches a counting global allocator to
 within 4 bytes on every dataset, so the per-node-type breakdown is the real heap.
 
+For normalized machine-readable data and a reorganized before/after presentation, see [size_stats_unit_measurements.json](size_stats_unit_measurements.json) and [size_stats_unit_measurements.md](size_stats_unit_measurements.md).
+
+The old tables in this chronological note contain logical key-byte diagnostics from the
+development investigation. They are not physical memory occupancy measurements. The corrected
+useful-versus-unused byte accounting is in the linked companion report; its useful percentage is
+always bounded by 100%.
+
 ## Status (branch `unit-size`, commits 2fe3a94..e67404c)
 
 Node types a `PathMap<()>` uses now, all behind `slim_ptrs` and not `slim_dispatch`:
@@ -60,32 +67,33 @@ class, so with `--features jemalloc` the "requested" column is the real cost.
 
 ## Measured (after the Vec clamp below)
 
-| dataset | values | nodes | list | dense | heap B | B/value | key-byte occupancy | chain% | leaf% |
-|---|---|---|---|---|---|---|---|---|---|
-| cities (asciiname) | 52883 | 50882 | 42002 | 8880 | 4215300 | 79.7 | 6.4% | 7.2% | 62.4% |
-| shakespeare words | 35714 | 28787 | 22038 | 6749 | 2409104 | 67.5 | 3.7% | 12.8% | 43.6% |
-| shakespeare sentences | 171979 | 205523 | 174815 | 30708 | 16113680 | 93.7 | 17.7% | 17.1% | 51.8% |
-| oeis (100k lines) | 99996 | 519978 | 508867 | 11111 | 35411907 | 354.1 | 53.8% | 80.3% | 19.7% |
-| big_logic.metta.paths | 91692 | 134486 | 119219 | 15267 | 9578528 | 104.5 | 23.1% | 22.3% | 32.0% |
-| seq u64 BE, 1M | 1000000 | 3925 | 1 | 3924 | 16315072 | 16.3 | 6.2% | - | - |
-| rand u64, 1M | 1000000 | 1038518 | 972162 | 66356 | 89377408 | 89.4 | 6.7% | 0.0% | 97.1% |
-| rand 16 B, 500k | 500000 | 556553 | 491904 | 64649 | 47202016 | 94.4 | 14.8% | 0.0% | 98.3% |
-| rand 32 B, 250k | 250000 | 345716 | 297505 | 48211 | 27691360 | 110.8 | 26.8% | 15.9% | 79.9% |
-| rand 128 B, 100k | 100000 | 355893 | 342785 | 13108 | 24633968 | 246.3 | 50.4% | 65.9% | 29.2% |
+| dataset | values | nodes | list | dense | heap B | B/value | chain% | leaf% |
+|---|---|---|---|---|---|---|---|---|
+| cities (asciiname) | 52883 | 50882 | 42002 | 8880 | 4215300 | 79.7 | 7.2% | 62.4% |
+| shakespeare words | 35714 | 28787 | 22038 | 6749 | 2409104 | 67.5 | 12.8% | 43.6% |
+| shakespeare sentences | 171979 | 205523 | 174815 | 30708 | 16113680 | 93.7 | 17.1% | 51.8% |
+| oeis (100k lines) | 99996 | 519978 | 508867 | 11111 | 35411907 | 354.1 | 80.3% | 19.7% |
+| big_logic.metta.paths | 91692 | 134486 | 119219 | 15267 | 9578528 | 104.5 | 22.3% | 32.0% |
+| seq u64 BE, 1M | 1000000 | 3925 | 1 | 3924 | 16315072 | 16.3 | - | - |
+| rand u64, 1M | 1000000 | 1038518 | 972162 | 66356 | 89377408 | 89.4 | 0.0% | 97.1% |
+| rand 16 B, 500k | 500000 | 556553 | 491904 | 64649 | 47202016 | 94.4 | 0.0% | 98.3% |
+| rand 32 B, 250k | 250000 | 345716 | 297505 | 48211 | 27691360 | 110.8 | 15.9% | 79.9% |
+| rand 128 B, 100k | 100000 | 355893 | 342785 | 13108 | 24633968 | 246.3 | 65.9% | 29.2% |
 
 chain% = list nodes holding a single child (path compression); leaf% = list nodes holding a
-single value and nothing else. key-byte occupancy = key bytes / requested bytes.
+single value and nothing else. The physical useful/unused split is reported in the companion
+measurement report; the historical key-byte count is only a logical diagnostic.
 
 Shape facts that drive the numbers:
 
 - Leaf list nodes dominate short-key data: 62% (cities), 97-98% (random 8-16 B keys). Each is
   a 64 B block (80 B under glibc) for a 1-13 B key and a zero-sized value. The list node's
-  42 B key buffer is 6-13% occupied on natural-language and short-key sets.
+  42 B key buffer leaves substantial unused capacity on natural-language and short-key sets.
 - Byte nodes are small: 57-90% have 3-4 entries, 85-99% have <= 8. Each costs two blocks
   (64 B header + Vec) for 3-8 key bytes: 25-37 B per key byte.
 - Byte node entries are 16 B, half of which is the padded `Option<()>`.
 - Long-path data (oeis, 128 B random) is 66-80% chain nodes, mostly with a full 42 B key;
-  the list node design works there (87-89% key buffer occupancy) but still pays 64 B per
+  the list node design uses much of its key buffer but still pays 64 B per
   42 B of key.
 - Before the clamp, full 256-entry byte nodes sat in 384-entry Vecs (with_capacity(3) doubled:
   3, 6, ..., 192, 384). seq_u64 measured 24345280 B; the clamp brings it to 16315072 B (-33%).
