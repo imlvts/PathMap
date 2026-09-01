@@ -599,7 +599,7 @@ impl BitMask for [u64; 4] {
     #[inline]
     fn clear_bit(&mut self, k: u8) {
         let idx = (k / 64) as usize;
-        self[idx] ^= 1 << (k % 64);
+        self[idx] &= !(1 << (k % 64));
     }
     #[inline]
     fn make_empty(&mut self) {

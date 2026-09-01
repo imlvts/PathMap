@@ -126,6 +126,10 @@ pub(crate) mod compact_leaf_node;
 #[cfg(all(feature = "slim_ptrs", not(feature = "slim_dispatch")))]
 pub(crate) mod sparse_byte_node;
 
+/// A byte-keyed node for zero-sized values: masks plus bare child pointers; see the module docs
+#[cfg(all(feature = "slim_ptrs", not(feature = "slim_dispatch")))]
+pub(crate) mod unit_byte_node;
+
 /// Features to inspect performance properties of trees, for optimizing
 #[cfg(feature = "counters")]
 pub mod counters;

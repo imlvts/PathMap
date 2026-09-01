@@ -194,3 +194,46 @@ Build time and peak RSS: sentences 0.16 s / 36 MB -> 0.14 s / 30 MB; rand 16 B 0
 
 The remaining byte-node bytes are in nodes with 7 or more entries (rand u64: 65k dense nodes
 with 9 to 32 entries, 27 MB), where the 16-byte entry (P1, packed cofree) is the next lever.
+
+## Implemented: unit byte nodes (P1 for zero-sized values, and P6)
+
+The packed cofree as first sketched (an 8-byte entry with the has-value flag in the pointer
+word's spare bits) cannot work: the write zippers obtain `&mut TrieNodeODRc` from a cofree and
+assign whole pointer words into it (node replacement, copy-on-write, joins), which would wipe
+any flag kept in the word. Moving the flag out of the entry into the node while keeping the
+per-entry `CoFree` API would mean rewriting the ~2500-line dense node.
+
+`src/unit_byte_node.rs` gets the same bytes for the case that matters here without touching
+`CoFree`: a byte node for zero-sized values made of a child mask, a value mask and a `Vec` of
+bare 8-byte child pointers (96-byte header). Values occupy no memory and an all-value node
+needs no `Vec` at all, which is also the mask-only leaf byte node (P6). It takes over from the
+dense node for unit tries at seven or more entries (sparse nodes keep the smaller ones), so
+unit tries no longer contain dense nodes at all. Join, meet, subtract and restrict run natively
+on the masks when both sides are unit byte nodes; the value lattice is evaluated once per
+operation since every zero-sized value is identical. A randomized differential test checks the
+four operations plus the in-place variants against identical `u64` tries (which use the dense
+implementation).
+
+| dataset | before (sparse) | with unit nodes | change |
+|---|---|---|---|
+| cities | 2097460 | 1927684 | -8% |
+| shakespeare words | 1397800 | 1326072 | -5% |
+| shakespeare sentences | 10411152 | 9990712 | -4% |
+| oeis | 32568611 | 31679787 | -3% |
+| seq u64, 1M | 16315648 | 408608 | -97% |
+| rand u64, 1M | 29193328 | 19706488 | -32% |
+| rand 16 B | 25577328 | 22248992 | -13% |
+| rand 32 B | 17911496 | 17115024 | -4% |
+
+Cumulative against the pre-work baseline: cities 4215300 -> 1927684 (-54%), Shakespeare words
+-45%, sentences -38%, big_logic -26%, seq u64 24345280 -> 408608 (-98%), rand u64 89377408 ->
+19706488 (-78%), rand 16 B -53%, rand 32 B -38%.
+
+Build time and peak RSS: rand u64 0.83 s / 165 MB -> 0.42 s / 79 MB; seq u64 0.16 s / 72 MB ->
+0.13 s / 56 MB; text datasets unchanged.
+
+Found and fixed alongside: `ByteMask::clear_bit` toggled the bit (XOR) instead of clearing it,
+so clearing an already-clear bit set it. Existing callers only ever cleared set bits.
+
+Remaining: the child `Vec` of unit byte nodes grows by doubling (72% used on random u64 keys);
+list-node chains (single child) are now the largest list-node share on every dataset.

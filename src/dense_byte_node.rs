@@ -128,6 +128,11 @@ impl<V: Clone + Send + Sync, A: Allocator, Cf: CoFree<V=V, A=A>> ByteNode<Cf, A>
     pub fn entry_count(&self) -> usize {
         self.values.len()
     }
+    /// Number of entries with an onward link
+    #[inline]
+    pub fn child_count(&self) -> usize {
+        self.values.iter().filter(|cf| cf.has_rec()).count()
+    }
     /// Sets the whole entry for `k`, which must be absent
     #[inline]
     pub(crate) fn set_cofree(&mut self, k: u8, cf: Cf) {
@@ -1345,6 +1350,11 @@ impl<V: Clone + Send + Sync, A: Allocator, Cf: CoFree<V=V, A=A>> TrieNode<V, A> 
                 self.pjoin_dyn(TaggedNodeRef::from_dense(&full))
             },
             #[cfg(feature = "slim_ptrs")]
+            UNIT_BYTE_NODE_TAG => {
+                let full = unsafe{ other.as_unit_unchecked() }.to_dense();
+                self.pjoin_dyn(TaggedNodeRef::from_dense(&full))
+            },
+            #[cfg(feature = "slim_ptrs")]
             COMPACT_LEAF_TAG => {
                 let full = unsafe{ other.as_compact_unchecked() }.into_full();
                 self.pjoin_dyn(TaggedNodeRef::from_list(&full))
@@ -1389,6 +1399,11 @@ impl<V: Clone + Send + Sync, A: Allocator, Cf: CoFree<V=V, A=A>> TrieNode<V, A> 
             #[cfg(feature = "slim_ptrs")]
             SPARSE_BYTE_NODE_TAG => {
                 let full = unsafe{ other_node.into_sparse_unchecked() }.take_into_dense();
+                self.join_into(full)
+            },
+            #[cfg(feature = "slim_ptrs")]
+            UNIT_BYTE_NODE_TAG => {
+                let full = unsafe{ other_node.into_unit_unchecked() }.take_into_dense();
                 self.join_into(full)
             },
             #[cfg(feature = "slim_ptrs")]
@@ -1478,6 +1493,11 @@ impl<V: Clone + Send + Sync, A: Allocator, Cf: CoFree<V=V, A=A>> TrieNode<V, A> 
                 self.pmeet_dyn(TaggedNodeRef::from_dense(&full))
             },
             #[cfg(feature = "slim_ptrs")]
+            UNIT_BYTE_NODE_TAG => {
+                let full = unsafe{ other.as_unit_unchecked() }.to_dense();
+                self.pmeet_dyn(TaggedNodeRef::from_dense(&full))
+            },
+            #[cfg(feature = "slim_ptrs")]
             COMPACT_LEAF_TAG => {
                 let full = unsafe{ other.as_compact_unchecked() }.into_full();
                 self.pmeet_dyn(TaggedNodeRef::from_list(&full))
@@ -1520,6 +1540,11 @@ impl<V: Clone + Send + Sync, A: Allocator, Cf: CoFree<V=V, A=A>> TrieNode<V, A> 
                 self.psubtract_dyn(TaggedNodeRef::from_dense(&full))
             },
             #[cfg(feature = "slim_ptrs")]
+            UNIT_BYTE_NODE_TAG => {
+                let full = unsafe{ other.as_unit_unchecked() }.to_dense();
+                self.psubtract_dyn(TaggedNodeRef::from_dense(&full))
+            },
+            #[cfg(feature = "slim_ptrs")]
             COMPACT_LEAF_TAG => {
                 let full = unsafe{ other.as_compact_unchecked() }.into_full();
                 self.psubtract_dyn(TaggedNodeRef::from_list(&full))
@@ -1559,6 +1584,11 @@ impl<V: Clone + Send + Sync, A: Allocator, Cf: CoFree<V=V, A=A>> TrieNode<V, A> 
             #[cfg(feature = "slim_ptrs")]
             SPARSE_BYTE_NODE_TAG => {
                 let full = unsafe{ other.as_sparse_unchecked() }.to_dense();
+                self.prestrict_dyn(TaggedNodeRef::from_dense(&full))
+            },
+            #[cfg(feature = "slim_ptrs")]
+            UNIT_BYTE_NODE_TAG => {
+                let full = unsafe{ other.as_unit_unchecked() }.to_dense();
                 self.prestrict_dyn(TaggedNodeRef::from_dense(&full))
             },
             #[cfg(feature = "slim_ptrs")]

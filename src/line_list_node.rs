@@ -2527,6 +2527,11 @@ impl<V: Clone + Send + Sync, A: Allocator> TrieNode<V, A> for LineListNode<V, A>
                 self.pjoin_dyn(TaggedNodeRef::from_dense(&full))
             },
             #[cfg(feature = "slim_ptrs")]
+            UNIT_BYTE_NODE_TAG => {
+                let full = unsafe{ other.as_unit_unchecked() }.to_dense();
+                self.pjoin_dyn(TaggedNodeRef::from_dense(&full))
+            },
+            #[cfg(feature = "slim_ptrs")]
             COMPACT_LEAF_TAG => {
                 let full = unsafe{ other.as_compact_unchecked() }.into_full();
                 self.pjoin_dyn(TaggedNodeRef::from_list(&full))
@@ -2550,6 +2555,13 @@ impl<V: Clone + Send + Sync, A: Allocator> TrieNode<V, A> for LineListNode<V, A>
             #[cfg(feature = "slim_ptrs")]
             SPARSE_BYTE_NODE_TAG => {
                 let mut new_node = unsafe{ other_node.as_sparse_unchecked() }.to_dense();
+                let status = new_node.merge_from_list_node(self);
+                debug_assert!(!status.is_none());
+                (AlgebraicStatus::Element, Err(TrieNodeODRc::from_byte_node(new_node, self.alloc.clone())))
+            },
+            #[cfg(feature = "slim_ptrs")]
+            UNIT_BYTE_NODE_TAG => {
+                let mut new_node = unsafe{ other_node.as_unit_unchecked() }.to_dense();
                 let status = new_node.merge_from_list_node(self);
                 debug_assert!(!status.is_none());
                 (AlgebraicStatus::Element, Err(TrieNodeODRc::from_byte_node(new_node, self.alloc.clone())))

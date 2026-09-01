@@ -280,7 +280,7 @@ impl<V: Clone + Send + Sync, A: Allocator> SparseByteNode<V, A> {
     fn overflow<R>(&mut self, f: impl FnOnce(&mut DenseByteNode<V, A>) -> R) -> (R, TrieNodeODRc<V, A>) {
         let mut dense = self.take_into_dense();
         let r = f(&mut dense);
-        (r, TrieNodeODRc::new_in(dense, self.alloc.clone()))
+        (r, TrieNodeODRc::from_byte_node(dense, self.alloc.clone()))
     }
     /// A one-byte child key for `key`, or `None` when the key is longer than a byte
     #[inline(always)]
@@ -696,7 +696,8 @@ mod tests {
         map.set_val_at(b"ah/1", ());
         let counts = tag_counts(&map);
         assert_eq!(counts.get(&SPARSE_BYTE_NODE_TAG), None, "{counts:?}");
-        assert_eq!(counts.get(&DENSE_BYTE_NODE_TAG), Some(&1), "{counts:?}");
+        // Unit values get a unit byte node; other value types a dense node
+        assert_eq!(counts.get(&UNIT_BYTE_NODE_TAG), Some(&1), "{counts:?}");
         assert_eq!(map.val_count(), 7);
         for k in [&b"ab/1"[..], b"ac/1", b"ad/1", b"ae/1", b"af/1", b"ag/1", b"ah/1"] {
             assert!(map.contains(k));

@@ -189,6 +189,10 @@ pub struct SizeStats {
     pub sparse: KindStats,
     /// Sparse byte nodes by occupied entry count (index = entries, 0..=6)
     pub sparse_entries_hist: [usize; 7],
+    /// Totals for unit byte nodes (see [crate::unit_byte_node]): a 96 B header plus a `Vec` of child pointers
+    pub unit: KindStats,
+    /// Summed child-pointer capacity of unit byte nodes
+    pub unit_child_capacity: usize,
     /// Nodes reached through more than one parent; counted once in the totals above
     pub shared_nodes: usize,
     /// Extra references those shared nodes receive beyond the first
@@ -244,6 +248,8 @@ impl Default for SizeStats {
             compact: KindStats::default(),
             sparse: KindStats::default(),
             sparse_entries_hist: [0; 7],
+            unit: KindStats::default(),
+            unit_child_capacity: 0,
             shared_nodes: 0,
             shared_extra_refs: 0,
             value_count: 0,
@@ -313,6 +319,8 @@ impl SizeStats {
             TaggedNodeRef::CompactLeaf(leaf) => self.count_compact(leaf),
             #[cfg(feature = "slim_ptrs")]
             TaggedNodeRef::SparseByteNode(node) => self.count_sparse(node),
+            #[cfg(feature = "slim_ptrs")]
+            TaggedNodeRef::UnitByteNode(node) => self.count_unit(node),
             #[cfg(feature = "bridge_nodes")]
             TaggedNodeRef::BridgeNode(_) => {},
             TaggedNodeRef::TinyRefNode(_) | TaggedNodeRef::EmptyNode => {},
@@ -394,6 +402,22 @@ impl SizeStats {
         self.sparse_entries_hist[entries.min(6)] += 1;
     }
 
+    #[cfg(feature = "slim_ptrs")]
+    fn count_unit<V: Clone + Send + Sync, A: Allocator>(&mut self, node: &crate::unit_byte_node::UnitByteNode<V, A>) {
+        let k = &mut self.unit;
+        k.nodes += 1;
+        k.add_block(size_of::<crate::unit_byte_node::UnitByteNode<V, A>>());
+        let (children, capacity) = node.children_len_capacity();
+        k.add_block(capacity * size_of::<TrieNodeODRc<V, A>>());
+        self.unit_child_capacity += capacity;
+        k.key_bytes += node.entry_count();
+        k.child_links += children;
+        let values = node.val_count();
+        k.values += values;
+        self.value_count += values;
+        self.dense_items_hist[dense_bucket(node.entry_count())] += 1;
+    }
+
     fn count_dense<V: Clone + Send + Sync, A: Allocator>(&mut self, node: &DenseByteNode<V, A>) {
         let slots = node.cofree_slot_stats();
         let k = &mut self.dense;
@@ -451,31 +475,31 @@ impl SizeStats {
 
     /// Total nodes of every kind
     pub fn total_nodes(&self) -> usize {
-        self.list.nodes + self.dense.nodes + self.cell.nodes + self.inline.nodes + self.compact.nodes + self.sparse.nodes
+        self.list.nodes + self.dense.nodes + self.cell.nodes + self.inline.nodes + self.compact.nodes + self.sparse.nodes + self.unit.nodes
     }
     /// Total heap blocks
     pub fn total_allocations(&self) -> usize {
-        self.list.allocations + self.dense.allocations + self.cell.allocations + self.compact.allocations + self.sparse.allocations
+        self.list.allocations + self.dense.allocations + self.cell.allocations + self.compact.allocations + self.sparse.allocations + self.unit.allocations
     }
     /// Total bytes requested from the allocator
     pub fn total_requested_bytes(&self) -> usize {
-        self.list.requested_bytes + self.dense.requested_bytes + self.cell.requested_bytes + self.compact.requested_bytes + self.sparse.requested_bytes
+        self.list.requested_bytes + self.dense.requested_bytes + self.cell.requested_bytes + self.compact.requested_bytes + self.sparse.requested_bytes + self.unit.requested_bytes
     }
     /// Total bytes after glibc chunk rounding
     pub fn total_malloc_bytes(&self) -> usize {
-        self.list.malloc_bytes + self.dense.malloc_bytes + self.cell.malloc_bytes + self.compact.malloc_bytes + self.sparse.malloc_bytes
+        self.list.malloc_bytes + self.dense.malloc_bytes + self.cell.malloc_bytes + self.compact.malloc_bytes + self.sparse.malloc_bytes + self.unit.malloc_bytes
     }
     /// Total bytes after jemalloc size-class rounding
     pub fn total_jemalloc_bytes(&self) -> usize {
-        self.list.jemalloc_bytes + self.dense.jemalloc_bytes + self.cell.jemalloc_bytes + self.compact.jemalloc_bytes + self.sparse.jemalloc_bytes
+        self.list.jemalloc_bytes + self.dense.jemalloc_bytes + self.cell.jemalloc_bytes + self.compact.jemalloc_bytes + self.sparse.jemalloc_bytes + self.unit.jemalloc_bytes
     }
     /// Key bytes materialised across the whole trie: the irreducible information the trie stores
     pub fn total_key_bytes(&self) -> usize {
-        self.list.key_bytes + self.dense.key_bytes + self.cell.key_bytes + self.inline.key_bytes + self.compact.key_bytes + self.sparse.key_bytes
+        self.list.key_bytes + self.dense.key_bytes + self.cell.key_bytes + self.inline.key_bytes + self.compact.key_bytes + self.sparse.key_bytes + self.unit.key_bytes
     }
     /// Total onward links
     pub fn total_child_links(&self) -> usize {
-        self.list.child_links + self.dense.child_links + self.cell.child_links + self.compact.child_links + self.sparse.child_links
+        self.list.child_links + self.dense.child_links + self.cell.child_links + self.compact.child_links + self.sparse.child_links + self.unit.child_links
     }
     /// Fraction of requested bytes that are key bytes
     pub fn key_byte_occupancy(&self) -> f64 {
@@ -585,7 +609,7 @@ impl SizeStats {
             }
         }
         // Cell nodes, compact leaves and sparse byte nodes pass through unchanged
-        for k in [&self.cell, &self.compact, &self.sparse] {
+        for k in [&self.cell, &self.compact, &self.sparse, &self.unit] {
             p.allocations += k.allocations;
             p.requested_bytes += k.requested_bytes;
             p.malloc_bytes += k.malloc_bytes;
@@ -627,7 +651,7 @@ impl SizeStats {
             per_val(self.total_requested_bytes()), per_val(self.total_malloc_bytes()), 100.0 * self.key_byte_occupancy());
         let _ = writeln!(out, "{:<6} {:>9} {:>9} {:>6} {:>12} {:>6} {:>12} {:>10} {:>9} {:>8} {:>9}",
             "kind", "nodes", "allocs", "%nodes", "req_bytes", "%req", "malloc_bytes", "key_bytes", "children", "values", "B/keybyte");
-        for (name, k) in [("list", &self.list), ("dense", &self.dense), ("cell", &self.cell), ("inline", &self.inline), ("compact", &self.compact), ("sparse", &self.sparse)] {
+        for (name, k) in [("list", &self.list), ("dense", &self.dense), ("cell", &self.cell), ("inline", &self.inline), ("compact", &self.compact), ("sparse", &self.sparse), ("unit", &self.unit)] {
             if k.nodes == 0 { continue; }
             let _ = writeln!(out, "{:<6} {:>9} {:>9} {:>5.1}% {:>12} {:>5.1}% {:>12} {:>10} {:>9} {:>8} {:>9.1}",
                 name, k.nodes, k.allocations, pct(k.nodes, self.total_nodes()), k.requested_bytes, pct(k.requested_bytes, self.total_requested_bytes()),
@@ -673,7 +697,10 @@ impl SizeStats {
             }
             let _ = writeln!(out);
         }
-        let dense_nodes = self.dense.nodes + self.cell.nodes;
+        if self.unit.nodes > 0 {
+            let _ = writeln!(out, "unit byte nodes: {}   children {} in capacity {}   values {}", self.unit.nodes, self.unit.child_links, self.unit_child_capacity, self.unit.values);
+        }
+        let dense_nodes = self.dense.nodes + self.cell.nodes + self.unit.nodes;
         if dense_nodes > 0 {
             let s = &self.dense_slots;
             let _ = writeln!(out, "byte nodes: entries {} in capacity {} ({:.1}% used, {} nodes over-allocated)   rec_only={} val_only={} both={}",
@@ -731,6 +758,8 @@ fn push_children<'a, V: Clone + Send + Sync, A: Allocator>(node: &TaggedNodeRef<
         TaggedNodeRef::InlineLeaf(_) | TaggedNodeRef::CompactLeaf(_) => {},
         #[cfg(feature = "slim_ptrs")]
         TaggedNodeRef::SparseByteNode(n) => collect(*n, stack),
+        #[cfg(feature = "slim_ptrs")]
+        TaggedNodeRef::UnitByteNode(n) => collect(*n, stack),
         #[cfg(feature = "bridge_nodes")]
         TaggedNodeRef::BridgeNode(n) => collect(*n, stack),
         TaggedNodeRef::TinyRefNode(_) | TaggedNodeRef::EmptyNode => {},
@@ -744,10 +773,10 @@ mod tests {
 
     #[test]
     fn counts_match_the_map() {
-        let mut map: PathMap<()> = PathMap::new();
+        let mut map: PathMap<u32> = PathMap::new();
         let keys: Vec<Vec<u8>> = (0u32..5000).map(|i| format!("k{}/{}", i % 37, i).into_bytes()).collect();
         for k in &keys {
-            map.set_val_at(k, ());
+            map.set_val_at(k, 1);
         }
         let stats = SizeStats::measure(&map);
         assert_eq!(stats.value_count, map.val_count());
@@ -789,14 +818,24 @@ mod tests {
 
     #[test]
     fn full_byte_node_capacity_is_exact() {
-        let mut map: PathMap<()> = PathMap::new();
+        let mut map: PathMap<u32> = PathMap::new();
         for b in 0..=255u8 {
-            map.set_val_at([b], ());
+            map.set_val_at([b], 1);
         }
         let stats = SizeStats::measure(&map);
         assert_eq!(stats.dense.nodes, 1);
         assert_eq!(stats.dense_slots.len, 256);
         assert_eq!(stats.dense_slots.capacity, 256, "the entries Vec must not overshoot the 256 possible entries");
+        // The same keys with unit values need only a unit byte node's masks
+        let mut map: PathMap<()> = PathMap::new();
+        for b in 0..=255u8 {
+            map.set_val_at([b], ());
+        }
+        let stats = SizeStats::measure(&map);
+        assert_eq!(stats.unit.nodes, 1);
+        assert_eq!(stats.unit.values, 256);
+        assert_eq!(stats.unit.requested_bytes, 96);
+        assert_eq!(stats.value_count, 256);
     }
 
     #[test]

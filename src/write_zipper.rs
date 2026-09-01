@@ -1517,6 +1517,11 @@ impl <'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> WriteZipperC
                 let dense = node.to_dense();
                 merge_branches_into_byte_node::<_, _, _, _, REMOVE_UNSET>(&dense, src_node, child_mask)
             },
+            #[cfg(feature = "slim_ptrs")]
+            TaggedNodeRef::UnitByteNode(node) => {
+                let dense = node.to_dense();
+                merge_branches_into_byte_node::<_, _, _, _, REMOVE_UNSET>(&dense, src_node, child_mask)
+            },
             _ => unreachable!(),
         }
         ;
@@ -1625,6 +1630,15 @@ impl <'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> WriteZipperC
                             },
                             #[cfg(feature = "slim_ptrs")]
                             TaggedNodeRef::SparseByteNode(src_node) => {
+                                let src_dense = src_node.to_dense();
+                                if remove_unset {
+                                    Self::merge_branches_into_focus::<crate::dense_byte_node::OrdinaryCoFree<V, A>, true>(self_focus_node, &src_dense, child_mask);
+                                } else {
+                                    Self::merge_branches_into_focus::<crate::dense_byte_node::OrdinaryCoFree<V, A>, false>(self_focus_node, &src_dense, child_mask);
+                                }
+                            },
+                            #[cfg(feature = "slim_ptrs")]
+                            TaggedNodeRef::UnitByteNode(src_node) => {
                                 let src_dense = src_node.to_dense();
                                 if remove_unset {
                                     Self::merge_branches_into_focus::<crate::dense_byte_node::OrdinaryCoFree<V, A>, true>(self_focus_node, &src_dense, child_mask);

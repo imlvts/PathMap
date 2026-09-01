@@ -661,6 +661,8 @@ fn viz_node_physical<V : TrieValue + Debug + Hash, A : Allocator>(n: &TrieNodeOD
         TaggedNodeRef::CompactLeaf(_) => { NodeType::Tiny }
         #[cfg(feature = "slim_ptrs")]
         TaggedNodeRef::SparseByteNode(_) => { NodeType::Dense }
+        #[cfg(feature = "slim_ptrs")]
+        TaggedNodeRef::UnitByteNode(_) => { NodeType::Dense }
         // TaggedNodeRef::BridgeNode(_) => { NodeType::Bridge }
         TaggedNodeRef::CellByteNode(_) => { NodeType::Cell }
         TaggedNodeRef::EmptyNode => { NodeType::Empty }
