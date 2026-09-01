@@ -2521,6 +2521,11 @@ impl<V: Clone + Send + Sync, A: Allocator> TrieNode<V, A> for LineListNode<V, A>
                 let full = unsafe{ other.as_inline_unchecked() }.into_full();
                 self.pjoin_dyn(TaggedNodeRef::from_list(&full))
             },
+            #[cfg(feature = "slim_ptrs")]
+            COMPACT_LEAF_TAG => {
+                let full = unsafe{ other.as_compact_unchecked() }.into_full();
+                self.pjoin_dyn(TaggedNodeRef::from_list(&full))
+            },
             EMPTY_NODE_TAG => {
                 AlgebraicResult::Identity(SELF_IDENT)
             },
@@ -2535,6 +2540,11 @@ impl<V: Clone + Send + Sync, A: Allocator> TrieNode<V, A> for LineListNode<V, A>
             #[cfg(feature = "slim_ptrs")]
             INLINE_LEAF_TAG => {
                 let full = unsafe{ other_node.as_inline_unchecked() }.into_full();
+                merge_into_list_nodes(self, &full)
+            },
+            #[cfg(feature = "slim_ptrs")]
+            COMPACT_LEAF_TAG => {
+                let full = unsafe{ other_node.as_compact_unchecked() }.into_full();
                 merge_into_list_nodes(self, &full)
             },
             LINE_LIST_NODE_TAG => {

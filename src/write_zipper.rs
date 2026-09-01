@@ -1505,6 +1505,13 @@ impl <'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> WriteZipperC
                 let node = replacement.as_tagged().as_dense().unwrap();
                 merge_branches_into_byte_node::<_, _, _, _, REMOVE_UNSET>(node, src_node, child_mask)
             },
+            #[cfg(feature = "slim_ptrs")]
+            TaggedNodeRef::CompactLeaf(node) => {
+                let mut line_node = node.into_full();
+                let replacement = line_node.convert_to_dense::<OrdinaryCoFree<V, A>>(child_mask.count_bits() + 2);
+                let node = replacement.as_tagged().as_dense().unwrap();
+                merge_branches_into_byte_node::<_, _, _, _, REMOVE_UNSET>(node, src_node, child_mask)
+            },
             _ => unreachable!(),
         }
         ;
@@ -1591,6 +1598,17 @@ impl <'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> WriteZipperC
                             },
                             #[cfg(feature = "slim_ptrs")]
                             TaggedNodeRef::InlineLeaf(src_node) => {
+                                let mut src_node = src_node.into_full();
+                                let src_dense = src_node.convert_to_dense::<crate::dense_byte_node::OrdinaryCoFree<V, A>>(3);
+                                let src_dense = src_dense.as_tagged().as_dense().unwrap();
+                                if remove_unset {
+                                    Self::merge_branches_into_focus::<crate::dense_byte_node::OrdinaryCoFree<V, A>, true>(self_focus_node, src_dense, child_mask);
+                                } else {
+                                    Self::merge_branches_into_focus::<crate::dense_byte_node::OrdinaryCoFree<V, A>, false>(self_focus_node, src_dense, child_mask);
+                                }
+                            },
+                            #[cfg(feature = "slim_ptrs")]
+                            TaggedNodeRef::CompactLeaf(src_node) => {
                                 let mut src_node = src_node.into_full();
                                 let src_dense = src_node.convert_to_dense::<crate::dense_byte_node::OrdinaryCoFree<V, A>>(3);
                                 let src_dense = src_dense.as_tagged().as_dense().unwrap();

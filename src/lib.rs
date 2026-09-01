@@ -110,9 +110,17 @@ mod zipper_head;
 #[cfg(feature = "random")]
 pub mod random;
 
+/// Shared implementation of the two single-path leaf node types
+#[cfg(all(feature = "slim_ptrs", not(feature = "slim_dispatch")))]
+pub(crate) mod single_path_leaf;
+
 /// A leaf node stored inside its parent's pointer word; see the module docs
 #[cfg(all(feature = "slim_ptrs", not(feature = "slim_dispatch")))]
 pub(crate) mod inline_leaf_node;
+
+/// A heap leaf node sized to its key; see the module docs
+#[cfg(all(feature = "slim_ptrs", not(feature = "slim_dispatch")))]
+pub(crate) mod compact_leaf_node;
 
 /// Features to inspect performance properties of trees, for optimizing
 #[cfg(feature = "counters")]
