@@ -180,6 +180,9 @@ pub struct SizeStats {
     pub dense: KindStats,
     /// Totals for [CellByteNode]s
     pub cell: KindStats,
+    /// Totals for inline leaves (see [crate::inline_leaf_node]); they own no heap blocks, so only
+    /// `nodes`, `key_bytes` and `values` are populated
+    pub inline: KindStats,
     /// Nodes reached through more than one parent; counted once in the totals above
     pub shared_nodes: usize,
     /// Extra references those shared nodes receive beyond the first
@@ -231,6 +234,7 @@ impl Default for SizeStats {
             list: KindStats::default(),
             dense: KindStats::default(),
             cell: KindStats::default(),
+            inline: KindStats::default(),
             shared_nodes: 0,
             shared_extra_refs: 0,
             value_count: 0,
@@ -294,6 +298,8 @@ impl SizeStats {
             TaggedNodeRef::LineListNode(list) => self.count_list(list),
             TaggedNodeRef::DenseByteNode(dense) => self.count_dense(dense),
             TaggedNodeRef::CellByteNode(cell) => self.count_cell(cell),
+            #[cfg(feature = "slim_ptrs")]
+            TaggedNodeRef::InlineLeaf(leaf) => self.count_inline(leaf),
             #[cfg(feature = "bridge_nodes")]
             TaggedNodeRef::BridgeNode(_) => {},
             TaggedNodeRef::TinyRefNode(_) | TaggedNodeRef::EmptyNode => {},
@@ -330,6 +336,17 @@ impl SizeStats {
             _ => {}
         }
         self.value_count += self.list.values - values_before;
+    }
+
+    #[cfg(feature = "slim_ptrs")]
+    fn count_inline<V: Clone + Send + Sync, A: Allocator>(&mut self, node: &crate::inline_leaf_node::InlineLeafNode<V, A>) {
+        let k = &mut self.inline;
+        k.nodes += 1;
+        k.key_bytes += node.key_len();
+        if node.has_val() {
+            k.values += 1;
+            self.value_count += 1;
+        }
     }
 
     fn count_dense<V: Clone + Send + Sync, A: Allocator>(&mut self, node: &DenseByteNode<V, A>) {
@@ -389,7 +406,7 @@ impl SizeStats {
 
     /// Total nodes of every kind
     pub fn total_nodes(&self) -> usize {
-        self.list.nodes + self.dense.nodes + self.cell.nodes
+        self.list.nodes + self.dense.nodes + self.cell.nodes + self.inline.nodes
     }
     /// Total heap blocks
     pub fn total_allocations(&self) -> usize {
@@ -409,7 +426,7 @@ impl SizeStats {
     }
     /// Key bytes materialised across the whole trie: the irreducible information the trie stores
     pub fn total_key_bytes(&self) -> usize {
-        self.list.key_bytes + self.dense.key_bytes + self.cell.key_bytes
+        self.list.key_bytes + self.dense.key_bytes + self.cell.key_bytes + self.inline.key_bytes
     }
     /// Total onward links
     pub fn total_child_links(&self) -> usize {
@@ -563,7 +580,7 @@ impl SizeStats {
             per_val(self.total_requested_bytes()), per_val(self.total_malloc_bytes()), 100.0 * self.key_byte_occupancy());
         let _ = writeln!(out, "{:<6} {:>9} {:>9} {:>6} {:>12} {:>6} {:>12} {:>10} {:>9} {:>8} {:>9}",
             "kind", "nodes", "allocs", "%nodes", "req_bytes", "%req", "malloc_bytes", "key_bytes", "children", "values", "B/keybyte");
-        for (name, k) in [("list", &self.list), ("dense", &self.dense), ("cell", &self.cell)] {
+        for (name, k) in [("list", &self.list), ("dense", &self.dense), ("cell", &self.cell), ("inline", &self.inline)] {
             if k.nodes == 0 { continue; }
             let _ = writeln!(out, "{:<6} {:>9} {:>9} {:>5.1}% {:>12} {:>5.1}% {:>12} {:>10} {:>9} {:>8} {:>9.1}",
                 name, k.nodes, k.allocations, pct(k.nodes, self.total_nodes()), k.requested_bytes, pct(k.requested_bytes, self.total_requested_bytes()),
@@ -656,6 +673,8 @@ fn push_children<'a, V: Clone + Send + Sync, A: Allocator>(node: &TaggedNodeRef<
         TaggedNodeRef::LineListNode(n) => collect(*n, stack),
         TaggedNodeRef::DenseByteNode(n) => collect(*n, stack),
         TaggedNodeRef::CellByteNode(n) => collect(*n, stack),
+        #[cfg(feature = "slim_ptrs")]
+        TaggedNodeRef::InlineLeaf(_) => {},
         #[cfg(feature = "bridge_nodes")]
         TaggedNodeRef::BridgeNode(n) => collect(*n, stack),
         TaggedNodeRef::TinyRefNode(_) | TaggedNodeRef::EmptyNode => {},
@@ -683,7 +702,8 @@ mod tests {
         assert_eq!(stats.list_leaf_key_len_hist.iter().sum::<usize>(), stats.list_leaf_nodes);
         assert_eq!(stats.dense_items_hist.iter().sum::<usize>(), stats.dense.nodes);
         assert!(stats.dense_slots.capacity >= stats.dense_slots.len);
-        assert!(stats.total_requested_bytes() >= stats.total_nodes() * 64);
+        assert!(stats.total_requested_bytes() >= (stats.list.nodes + stats.dense.nodes + stats.cell.nodes) * 64);
+        assert_eq!(stats.inline.allocations, 0);
         // The projection machinery must reproduce the measured baseline exactly
         let base = &stats.projections()[0];
         assert_eq!(base.allocations, stats.total_allocations());

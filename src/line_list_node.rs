@@ -941,17 +941,26 @@ impl<V: Clone + Send + Sync, A: Allocator> LineListNode<V, A> {
     #[inline]
     fn set_payload_abstract<const IS_CHILD: bool>(&mut self, key: &[u8], mut payload: ValOrChildUnion<V, A>) -> Result<(Option<ValOrChild<V, A>>, bool), TrieNodeODRc<V, A>> where V: Clone {
 
-        // A local function to either set a child or a branch on a downstream node
-        let set_payload_recursive = |mut child: TaggedNodeRefMut<'_, V, A>, node_key, payload: ValOrChildUnion<V, A>| {
-            if IS_CHILD {
+        // A local function to either set a child or a branch on a downstream node.  The downstream node
+        // was just created by a split, so it is unshared; if it cannot hold the new payload it hands back a
+        // replacement, which belongs in the slot that points at it, not in place of `self`
+        let set_payload_recursive = |child_slot: &mut TrieNodeODRc<V, A>, node_key, payload: ValOrChildUnion<V, A>| -> Result<(Option<ValOrChild<V, A>>, bool), TrieNodeODRc<V, A>> {
+            let result = if IS_CHILD {
                 let onward_link = unsafe{ payload.into_child() };
-                return child.node_set_branch(node_key, onward_link).map(|_| (None, true))
+                child_slot.make_mut().node_set_branch(node_key, onward_link).map(|_| (None, true))
             } else {
                 let val = unsafe{ payload.into_val() };
-                return child.node_set_val(node_key, val).map(|(ret_val, _)| {
+                child_slot.make_mut().node_set_val(node_key, val).map(|(ret_val, _)| {
                     let ret_val = ret_val.map(|val| ValOrChild::Val(val));
                     (ret_val, true)
                 })
+            };
+            match result {
+                Ok(result) => Ok(result),
+                Err(replacement) => {
+                    *child_slot = replacement;
+                    Ok((None, true))
+                }
             }
         };
 
@@ -985,8 +994,8 @@ impl<V: Clone + Send + Sync, A: Allocator> LineListNode<V, A> {
             }
             if overlap > 0 {
                 self.split_0(overlap);
-                let child = unsafe{ self.child_in_slot_mut::<0>() }.make_mut();
-                return set_payload_recursive(child, &key[overlap..], payload)
+                let child_slot = unsafe{ self.child_in_slot_mut::<0>() };
+                return set_payload_recursive(child_slot, &key[overlap..], payload)
             }
         }
 
@@ -1015,8 +1024,8 @@ impl<V: Clone + Send + Sync, A: Allocator> LineListNode<V, A> {
             }
             if overlap > 0 {
                 self.split_1(overlap);
-                let child = unsafe{ self.child_in_slot_mut::<1>() }.make_mut();
-                return set_payload_recursive(child, &key[overlap..], payload)
+                let child_slot = unsafe{ self.child_in_slot_mut::<1>() };
+                return set_payload_recursive(child_slot, &key[overlap..], payload)
             }
         }
 
@@ -2507,6 +2516,11 @@ impl<V: Clone + Send + Sync, A: Allocator> TrieNode<V, A> for LineListNode<V, A>
                 let tiny_node = unsafe{ other.as_tiny_unchecked() };
                 tiny_node.pjoin_dyn(self.as_tagged())
             }
+            #[cfg(feature = "slim_ptrs")]
+            INLINE_LEAF_TAG => {
+                let full = unsafe{ other.as_inline_unchecked() }.into_full();
+                self.pjoin_dyn(TaggedNodeRef::from_list(&full))
+            },
             EMPTY_NODE_TAG => {
                 AlgebraicResult::Identity(SELF_IDENT)
             },
@@ -2518,6 +2532,11 @@ impl<V: Clone + Send + Sync, A: Allocator> TrieNode<V, A> for LineListNode<V, A>
         debug_assert!(validate_node(self));
         let other_node = other.as_tagged();
         match other_node.tag() {
+            #[cfg(feature = "slim_ptrs")]
+            INLINE_LEAF_TAG => {
+                let full = unsafe{ other_node.as_inline_unchecked() }.into_full();
+                merge_into_list_nodes(self, &full)
+            },
             LINE_LIST_NODE_TAG => {
                 let other_list_node = unsafe{ other_node.as_list_unchecked() };
                 merge_into_list_nodes(self, other_list_node)

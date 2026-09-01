@@ -110,6 +110,10 @@ mod zipper_head;
 #[cfg(feature = "random")]
 pub mod random;
 
+/// A leaf node stored inside its parent's pointer word; see the module docs
+#[cfg(all(feature = "slim_ptrs", not(feature = "slim_dispatch")))]
+pub(crate) mod inline_leaf_node;
+
 /// Features to inspect performance properties of trees, for optimizing
 #[cfg(feature = "counters")]
 pub mod counters;

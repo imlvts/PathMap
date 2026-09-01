@@ -95,3 +95,33 @@ Projected requested bytes as % of the measured layout (`SizeStats::projections`)
 Recommended order for `PathMap<()>`: P3 (largest, self-contained new node type), then P4
 (reuses the same slot layout), then P1 (API change in `CoFree`). P6 is a special case of the
 same leaf-node work if dense integer keys matter.
+
+## Implemented: inline leaves (P7)
+
+Question raised during the work: can a pure value node for `()` be just a bit in the parent?
+Only when the leaf's remaining key is empty, and that case already is a flag in the parent's
+entry (the `Option<()>` in a byte-node cofree, the value slot in a list node). Every measured
+leaf node had 1 to 42 bytes of key left, so those bytes must live somewhere. The parent's
+8-byte pointer word is the natural place: `src/inline_leaf_node.rs` stores a leaf with a 1 to
+7 byte key and a zero-sized value inside the `TrieNodeODRc` word itself (tag 5, length,
+key bytes, a has-value bit), so such a leaf costs nothing beyond the entry it already had.
+Enabled automatically when `size_of::<V>() == 0`, `V` needs no drop, and the allocator
+handle is zero-sized. Mutations the word cannot hold return a replacement `LineListNode`.
+
+| dataset | before (clamp) | with inline leaves | change | inline leaves | share of nodes |
+|---|---|---|---|---|---|
+| cities | 4215300 | 2742340 | -35% | 23015 | 45% |
+| shakespeare words | 2409104 | 1798224 | -25% | 9545 | 33% |
+| shakespeare sentences | 16113680 | 14375888 | -11% | 27153 | 13% |
+| oeis | 35411907 | 34304515 | -3% | 17303 | 3% |
+| big_logic paths | 9578528 | 8924256 | -7% | 10223 | 8% |
+| rand u64 | 89377408 | 28953408 | -68% | 944125 | 91% |
+| rand 16 B | 47202016 | 47202016 | 0 (13 B tails) | 0 | 0 |
+| rand 128 B | 24633968 | 24613936 | 0 | 313 | 0 |
+
+Build time for 1M random u64 keys dropped from 0.83 s to 0.46 s (fewer allocations); peak
+RSS from 165 MB to 90 MB. The 8 to 42 byte leaves (rand 16 B, half of the sentence leaves)
+still need the compact heap leaf (P3) or a wider inline form.
+
+Fixed alongside: `LineListNode::set_payload_abstract` propagated a freshly split child's
+`Err(replacement)` as its own, which only became reachable once a child could refuse a write.

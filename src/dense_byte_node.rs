@@ -1312,6 +1312,11 @@ impl<V: Clone + Send + Sync, A: Allocator, Cf: CoFree<V=V, A=A>> TrieNode<V, A> 
                 let tiny_node = unsafe{ other.as_tiny_unchecked() };
                 tiny_node.pjoin_dyn(self.as_tagged())
             }
+            #[cfg(feature = "slim_ptrs")]
+            INLINE_LEAF_TAG => {
+                let full = unsafe{ other.as_inline_unchecked() }.into_full();
+                self.pjoin_dyn(TaggedNodeRef::from_list(&full))
+            },
             EMPTY_NODE_TAG => {
                 AlgebraicResult::Identity(SELF_IDENT)
             },
@@ -1343,6 +1348,11 @@ impl<V: Clone + Send + Sync, A: Allocator, Cf: CoFree<V=V, A=A>> TrieNode<V, A> 
                 let mut taken_node = CellByteNode::<V, A>::new_in(self.alloc.clone());
                 core::mem::swap(other_byte_node, &mut taken_node);
                 self.join_into(taken_node)
+            },
+            #[cfg(feature = "slim_ptrs")]
+            INLINE_LEAF_TAG => {
+                let full = unsafe{ other_node.into_inline_unchecked() }.into_full();
+                self.merge_from_list_node(&full)
             },
             _ => { unsafe{ unreachable_unchecked() } }
         };
@@ -1415,6 +1425,11 @@ impl<V: Clone + Send + Sync, A: Allocator, Cf: CoFree<V=V, A=A>> TrieNode<V, A> 
                 let tiny_node = unsafe { other.as_tiny_unchecked() };
                 tiny_node.pmeet_dyn(self.as_tagged()).invert_identity()
             },
+            #[cfg(feature = "slim_ptrs")]
+            INLINE_LEAF_TAG => {
+                let full = unsafe{ other.as_inline_unchecked() }.into_full();
+                self.pmeet_dyn(TaggedNodeRef::from_list(&full))
+            },
             EMPTY_NODE_TAG => AlgebraicResult::None,
             _ => unsafe{ unreachable_unchecked() }
         }
@@ -1442,6 +1457,11 @@ impl<V: Clone + Send + Sync, A: Allocator, Cf: CoFree<V=V, A=A>> TrieNode<V, A> 
                 let tiny_node = unsafe { other.as_tiny_unchecked() };
                 self.psubtract_abstract(tiny_node)
             },
+            #[cfg(feature = "slim_ptrs")]
+            INLINE_LEAF_TAG => {
+                let full = unsafe{ other.as_inline_unchecked() }.into_full();
+                self.psubtract_dyn(TaggedNodeRef::from_list(&full))
+            },
             EMPTY_NODE_TAG => AlgebraicResult::Identity(SELF_IDENT),
             _ => unsafe{ unreachable_unchecked() }
         }
@@ -1468,6 +1488,11 @@ impl<V: Clone + Send + Sync, A: Allocator, Cf: CoFree<V=V, A=A>> TrieNode<V, A> 
             TINY_REF_NODE_TAG => {
                 let tiny_node = unsafe { other.as_tiny_unchecked() };
                 self.prestrict_abstract(tiny_node)
+            },
+            #[cfg(feature = "slim_ptrs")]
+            INLINE_LEAF_TAG => {
+                let full = unsafe{ other.as_inline_unchecked() }.into_full();
+                self.prestrict_dyn(TaggedNodeRef::from_list(&full))
             },
             EMPTY_NODE_TAG => AlgebraicResult::None,
             _ => unsafe{ unreachable_unchecked() }
