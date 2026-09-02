@@ -13,8 +13,7 @@ use pathmap::zipper::*;
 include!("common/harness.rs");
 
 fn main() {
-    // `--check` also asserts the structural invariants the libFuzzer target
-    // checks, which is handy for replaying a corpus without cargo-fuzz.
+    // `--check` also asserts the structural invariants after every operation.
     let args: Vec<String> = std::env::args().skip(1).collect();
     let check = args.iter().any(|a| a == "--check");
     // Resident mode: one process, many inputs over stdin.  See `serve`.

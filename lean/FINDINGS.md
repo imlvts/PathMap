@@ -131,7 +131,7 @@ default implementation effectively does and what this needs.
 
 This is the invariant `ZipperHead` depends on to hand out non-overlapping
 zippers: an escaped read zipper can observe a region another zipper is
-concurrently writing.  The libFuzzer target checks exactly this
+concurrently writing.  `pathmap_trace --check` checks exactly this
 (`root_prefix_path()` must never change) and hits it on roughly 1% of random
 inputs.
 

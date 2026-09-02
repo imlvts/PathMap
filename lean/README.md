@@ -27,9 +27,6 @@ cargo build --release --example pathmap_trace
 # generate random programs and compare model against crate
 ./lean/differential.py --random 500 --seed 1
 
-# or replay a corpus produced by the fuzzer
-./lean/differential.py fuzz/corpus/zipper_ops/*
-
 # minimise an input that diverges (or that panics)
 ./lean/shrink.py path/to/input.bin
 ```
@@ -572,10 +569,10 @@ cargo run --example sharing_check
 Both hold wherever they run (266/266 and 214/214, 1464 node references reused)
 and both abort on tries containing a *shared dangling path* — see finding 16.
 
-## The libFuzzer target
+## Structural invariants
 
-`fuzz/fuzz_targets/zipper_ops.rs` runs the same decoder under libFuzzer and
-checks structural invariants in-process — no oracle, so it runs at full speed:
+`pathmap_trace --check <file>` (and `act_trace --check`) asserts structural
+invariants in-process after every operation — no oracle needed:
 
 * `at_root()` agrees with `path().is_empty()`
 * `origin_path() == root_prefix_path() ++ path()`
@@ -584,13 +581,8 @@ checks structural invariants in-process — no oracle, so it runs at full speed:
 * `child_count() == |child_mask()|`
 * `val_count()` counts the focus value, and equals it exactly at a leaf
 
-```bash
-cargo +nightly fuzz run zipper_ops
-./lean/differential.py fuzz/corpus/zipper_ops/*     # deep pass over the corpus
-```
-
-Without `cargo-fuzz` installed, the same invariants can be replayed over any
-input with `cargo run --release --example pathmap_trace -- --check <file>`.
+`differential.py` runs without `--check`, because a crate that violates an
+invariant should show up as a trace diff rather than as an abort.
 
 ## Out of scope
 
@@ -599,7 +591,7 @@ input with `cargo run --release --example pathmap_trace -- --check <file>`.
 allocator behaviour.  The model covers `PathMap`, `ReadZipper` and `WriteZipper`
 over an in-memory trie.
 
-That said, the containment invariant the fuzz target checks
+That said, the containment invariant `--check` asserts
 (`root_prefix_path()` never changes) is exactly the property `ZipperHead` relies
 on to hand out non-overlapping zippers safely, and it is violated — see
 [FINDINGS.md](FINDINGS.md).

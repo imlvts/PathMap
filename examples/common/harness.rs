@@ -4,8 +4,11 @@
 //
 // * `examples/pathmap_trace.rs` prints a trace, which `lean/differential.py`
 //   diffs against the Lean model's trace for the same bytes.
-// * `fuzz/fuzz_targets/zipper_ops.rs` runs the same program under libFuzzer and
-//   checks structural invariants in-process (no oracle needed, so it is fast).
+// * `examples/act_trace.rs` does the same with an `ArenaCompactTree` as the
+//   read source.
+//
+// Either one, given `--check`, also asserts structural invariants in-process
+// after every operation (no oracle needed).
 //
 // The wire format and operation table are a contract shared with
 // `lean/PathMapModel/Fuzz.lean`; any change here must be mirrored there.
@@ -291,7 +294,7 @@ macro_rules! tgt {
 
 /// Structural invariants every zipper must satisfy at every moment.
 ///
-/// These need no oracle, so the libFuzzer target can check them on every step.
+/// These need no oracle, so `--check` can assert them on every step.
 /// Violations are `pathmap` bugs by construction: each is either stated in the
 /// trait documentation or forced by the meaning of the accessors.
 fn check_zipper<Z>(z: &Z, label: &str, expected_root: &[u8])
@@ -357,7 +360,7 @@ where
 /// Decode and execute a fuzzer input.
 ///
 /// With `check`, every zipper is validated against `check_zipper` after every
-/// operation; that is the mode the libFuzzer target uses.  The trace tool runs
+/// operation; that is what `--check` does.  A differential pass runs
 /// with `check == false`, because it is comparing against the model rather than
 /// asserting, and a crate that violates an invariant should show up as a trace
 /// diff rather than as an abort.
