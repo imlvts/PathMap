@@ -17,6 +17,15 @@ standalone reproducers in `cargo run -p differential --bin zipper_bug_repros`.
 
 ## Build and run
 
+Lean is installed through `elan`, which reads `lean-toolchain` and fetches the
+pinned version (`leanprover/lean4:v4.33.1`, ~300 MB) on the first build.  The
+model has no package dependencies.
+
+```bash
+curl https://elan.lean-lang.org/elan-init.sh -sSf | sh   # or: brew install elan-init
+source ~/.elan/env
+```
+
 ```bash
 # the model, its build-time law checks, and the oracle binary
 cd lean && lake build
