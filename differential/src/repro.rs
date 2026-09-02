@@ -1,13 +1,10 @@
-
-// ===========================================================================
-// Repro codegen
-// ===========================================================================
-//
+//! Repro codegen.
+//!
 // A failing fuzzer input is a `.bin` and a trace diff, which still leaves the
 // repro to be written by hand -- and the interesting ones are 40 operations
 // deep into a trie built by 40 earlier ones.  `emit_repro` turns the input back
 // into a standalone Rust program that uses only the public `pathmap` API, so a
-// divergence can be pasted into `examples/zipper_bug_repros.rs`, shrunk by hand,
+// divergence can be pasted into `bin/zipper_bug_repros.rs`, shrunk by hand,
 // or handed to someone who does not have the fuzzer.
 //
 // It decodes the *same bytes in the same order* as `run_ops`, including the
@@ -16,9 +13,10 @@
 // will not reproduce, so `--repro` output is worth compiling and running rather
 // than trusting.
 
+use crate::harness::*;
+
 /// A byte slice as a Rust literal: `&[1u8, 2, 3]`, or `&[]` when empty.
-#[allow(dead_code)]
-fn rs_bytes(p: &[u8]) -> String {
+pub fn rs_bytes(p: &[u8]) -> String {
     if p.is_empty() {
         "&[]".to_string()
     } else {
@@ -32,8 +30,7 @@ fn rs_bytes(p: &[u8]) -> String {
 /// sites like `ByteMask::from_iter(..)` where a leading `&` would bind to the
 /// whole expression instead of the literal.  The empty case needs an explicit
 /// element type; there is nothing to infer it from.
-#[allow(dead_code)]
-fn rs_mask(p: &[u8]) -> String {
+pub fn rs_mask(p: &[u8]) -> String {
     if p.is_empty() {
         "[0u8; 0]".to_string()
     } else {
@@ -47,8 +44,7 @@ fn rs_mask(p: &[u8]) -> String {
 ///
 /// `upto` is the number of operations to emit; the divergent step from a trace
 /// line `N <op> ...` is reproduced by `upto = N + 1`.
-#[allow(dead_code)]
-fn emit_repro(bytes: &[u8], upto: usize) -> String {
+pub fn emit_repro(bytes: &[u8], upto: usize) -> String {
     let mut d = Dec { bytes, pos: 0 };
     let mut o = String::new();
     o.push_str(

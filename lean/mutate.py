@@ -39,7 +39,7 @@ import tomllib
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SPEC = os.path.join(ROOT, "lean", "mutants.toml")
 ORACLE = os.path.join(ROOT, "lean", ".lake", "build", "bin", "pathmap-oracle")
-TRACE = os.path.join(ROOT, "target", "release", "examples", "pathmap_trace")
+TRACE = os.path.join(ROOT, "target", "release", "pathmap_trace")
 
 
 def sh(cmd, **kw):
@@ -48,7 +48,7 @@ def sh(cmd, **kw):
 
 def build():
     """Rebuild the trace producer.  Returns None on success, else the error."""
-    p = sh(["cargo", "build", "--release", "--example", "pathmap_trace"])
+    p = sh(["cargo", "build", "--release", "-p", "differential"])
     if p.returncode != 0:
         return p.stderr.decode(errors="replace")[-600:]
     return None

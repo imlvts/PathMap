@@ -14,8 +14,8 @@ see the root cause noted there.
 Every entry has a standalone reproducer:
 
 ```bash
-cargo run --example zipper_bug_repros -- --list
-cargo run --example zipper_bug_repros -- <case>
+cargo run -p differential --bin zipper_bug_repros -- --list
+cargo run -p differential --bin zipper_bug_repros -- <case>
 ```
 
 Several only *abort* in a debug build (debug assertions, overflow checks) but
@@ -343,15 +343,15 @@ wz.remove_unmasked_branches(ByteMask::EMPTY, false);
 
 The same model, the same operation table, the same trace format -- with an
 `ArenaCompactTree` as the read source instead of a `PathMap`
-(`differential.py --act`, `examples/act_trace.rs`).  ACT is a second
+(`differential.py --act`, `differential/src/bin/act_trace.rs`).  ACT is a second
 implementation of the same read specification, so the model holds it to exactly
 the same standard.
 
 Reproducers:
 
 ```bash
-cargo run --features arena_compact --example act_bug_repros -- --list
-cargo run --features arena_compact --example act_bug_repros -- <case>
+cargo run -p differential --bin act_bug_repros -- --list
+cargo run -p differential --bin act_bug_repros -- <case>
 ```
 
 What ACT cannot be asked to do, and why those operations report `skip`: it is
@@ -432,7 +432,7 @@ separately, so I am not claiming it is the same defect.
 * **`merge_zipper_into_file` matches its specification.**  ACT has no write
   zipper but can be merged into, and the merge is a join in which the zipper's
   value wins -- in the model's terms `Trie.join` with the source preferred.
-  `cargo run --features arena_compact --example act_merge_check` checks both
+  `cargo run -p differential --bin act_merge_check` checks both
   halves of that rule (the union of locations, and which value survives a
   collision) over 300 random prefix-sharing tries, including dangling paths and
   root values: **300 of 300 match**.
@@ -506,7 +506,7 @@ Grafting nothing should neither create nor destroy a location, which is the rule
 
 `cases: merkleize_dangling`, `shared_dangling_cow` — **abort**
 
-Found by `cargo run --example sharing_check`, which checks the two properties
+Found by `cargo run -p differential --bin sharing_check`, which checks the two properties
 sharing has to preserve.  Both symptoms need a location that exists but holds no
 value — the state `create_path` produces and `remove_val(false)` leaves behind —
 to be *shared*, which is what makes them invisible to a value-semantics model

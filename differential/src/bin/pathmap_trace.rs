@@ -5,12 +5,7 @@
 //! `lean/.lake/build/bin/pathmap-oracle` prints the same trace from the Lean
 //! model; `lean/differential.py` runs both and diffs them.
 
-use pathmap::PathMap;
-use pathmap::ring::AlgebraicStatus;
-use pathmap::utils::ByteMask;
-use pathmap::zipper::*;
-
-include!("common/harness.rs");
+use differential::*;
 
 fn main() {
     // `--check` also asserts the structural invariants after every operation.

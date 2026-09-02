@@ -1,6 +1,6 @@
 //! Checks the properties structural sharing must preserve.
 //!
-//!     cargo run --example sharing_check
+//!     cargo run -p differential --bin sharing_check
 //!
 //! The Lean model has no notion of nodes, so sharing is invisible to it: a
 //! `Trie` is a flat map from paths to entries, and grafting the same subtrie

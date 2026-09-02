@@ -5,7 +5,7 @@ import PathMapModel.Spec
 
 This module turns the model into an **oracle**: it decodes a raw fuzzer input
 into a program over two maps and two zippers, runs it, and emits a trace.  The
-Rust side (`examples/pathmap_trace.rs`) decodes the *same bytes* with the *same*
+Rust side (`differential/src/bin/pathmap_trace.rs`) decodes the *same bytes* with the *same*
 rules and emits the *same* trace format from the real crate, so any behavioural
 divergence shows up as a textual diff.
 
@@ -191,7 +191,7 @@ def noPrune : Bool := false
 a following `u8 % 2` byte (`0` = write zipper, `1` = read zipper); ops `27`–`46`
 are write-zipper operations. -/
 
-/-- Number of distinct operations.  Must match `NOPS` in `examples/common/harness.rs`. -/
+/-- Number of distinct operations.  Must match `NOPS` in `differential/src/harness.rs`. -/
 def nops : Nat := 56
 
 /-- A full `k`-path iteration: `descend_first_k_path` followed by

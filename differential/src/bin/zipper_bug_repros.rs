@@ -1,9 +1,9 @@
 //! Minimal reproducers for the zipper-API defects the Lean differential model
 //! turned up.  See `lean/FINDINGS.md` for the write-up.
 //!
-//!     cargo run --example zipper_bug_repros -- --list
-//!     cargo run --example zipper_bug_repros -- <name>
-//!     cargo run --example zipper_bug_repros -- --all       # skips the hang
+//!     cargo run -p differential --bin zipper_bug_repros -- --list
+//!     cargo run -p differential --bin zipper_bug_repros -- <name>
+//!     cargo run -p differential --bin zipper_bug_repros -- --all       # skips the hang
 //!
 //! Several cases abort in a debug build (debug assertions / overflow checks) and
 //! misbehave silently in release, so each one is selectable individually.

@@ -8,12 +8,12 @@ Two things live here:
 
 1. **The model** (`PathMapModel/`) — a total, executable definition of what each
    API function *means*, with the laws relating them.
-2. **The harness** (`Main.lean`, `differential.py`, `shrink.py`, and
-   `../examples/common/harness.rs`) — the machinery that runs the same generated
+2. **The harness** (`Main.lean`, `differential.py`, `shrink.py`, and the
+   `../differential` crate) — the machinery that runs the same generated
    program against the model and against `pathmap`, and diffs the results.
 
 Everything the fuzzing found is written up in [FINDINGS.md](FINDINGS.md), with
-standalone reproducers in `cargo run --example zipper_bug_repros`.
+standalone reproducers in `cargo run -p differential --bin zipper_bug_repros`.
 
 ## Build and run
 
@@ -22,7 +22,7 @@ standalone reproducers in `cargo run --example zipper_bug_repros`.
 cd lean && lake build
 
 # the crate side of the differential harness
-cargo build --release --example pathmap_trace
+cargo build --release -p differential
 
 # generate random programs and compare model against crate
 ./lean/differential.py --random 500 --seed 1
@@ -197,15 +197,15 @@ count); the run ends with a full dump of both maps.  Any behavioural difference
 is a textual diff.
 
 The op table lives in `Fuzz.lean` (`PathMapModel.Fuzz.step`) and
-`examples/common/harness.rs`; **the two must be changed together.**
+`differential/src/harness.rs`; **the two must be changed together.**
 
 ### Front ends
 
 | binary | drives | built with |
 |---|---|---|
 | `lean/.lake/build/bin/pathmap-oracle` | the Lean model | `cd lean && lake build` |
-| `target/release/examples/pathmap_trace` | the real crate | `cargo build --release --example pathmap_trace` |
-| `target/release/examples/act_trace` | the crate, ACT read source | `cargo build --release --features arena_compact --example act_trace` |
+| `target/release/pathmap_trace` | the real crate | `cargo build --release -p differential` |
+| `target/release/act_trace` | the crate, ACT read source | `cargo build --release -p differential` |
 
 `differential.py` diffs the Lean oracle against one of the others:
 
@@ -219,8 +219,8 @@ The op table lives in `Fuzz.lean` (`PathMapModel.Fuzz.step`) and
 Each front end is spawned once with `--server` and stays up, taking inputs as
 hex on stdin — `run-input <timeout-ms> <hex>`, replying with the trace and one
 `!DONE` / `!TIMEOUT` / `!PANIC <msg>` terminator.  The protocol lives in
-`examples/common/server.rs`, shared by the crate front ends and by the reference
-model (it is plumbing; it knows nothing about tries).
+`differential/src/server.rs`, shared by both crate front ends (it is plumbing;
+it knows nothing about tries).
 
 This replaced a temp file plus two fresh processes per input.  Process creation
 dominated: 2000 inputs took 10.3s wall with 6.4s of that in `sys`, and now take
@@ -290,13 +290,13 @@ trie built by forty earlier ones.  `--repro` turns the input back into a
 standalone Rust program that uses only the public `pathmap` API:
 
 ```bash
-cargo run --release --example pathmap_trace -- --repro FILE            # whole program
-cargo run --release --example pathmap_trace -- --repro --upto 15 FILE  # through step 14
+cargo run --release -p differential --bin pathmap_trace -- --repro FILE            # whole program
+cargo run --release -p differential --bin pathmap_trace -- --repro --upto 15 FILE  # through step 14
 ```
 
 `--upto N` stops after N operations, so a trace line `14 to_next_val ...` is
 reproduced by `--upto 15`.  Shrink first (`shrink.py`) and the result is usually
-a handful of calls, ready to paste into `examples/zipper_bug_repros.rs`.
+a handful of calls, ready to paste into `differential/src/bin/zipper_bug_repros.rs`.
 
 The generator decodes the same bytes in the same order as the op table,
 including the operands consumed only to keep the stream aligned, so it is worth
@@ -498,11 +498,11 @@ as the known ones are fixed.
 so the model can hold it to the same standard without any new modelling:
 
 ```bash
-cargo build --release --features arena_compact --example act_trace
+cargo build --release -p differential
 ./lean/differential.py --act --random 500 --seed 99 --max-fails 0
 ```
 
-`examples/act_trace.rs` builds an ACT from map1 with `from_zipper` and runs the
+`differential/src/bin/act_trace.rs` builds an ACT from map1 with `from_zipper` and runs the
 identical operation table against an `ACTZipper`.  There is still exactly one
 op table: the merge operations sit behind a `ReadSource` trait, whose ACT
 implementation declines them, so the two front ends cannot drift apart.  The
@@ -526,7 +526,7 @@ programs), `descend_first_k_path()` only walks the leftmost chain, and
 `descend_last_path()` can run one byte past the end of the trie.  `from_zipper`
 round-trips faithfully, and `merge_zipper_into_file` -- ACT's one write-shaped
 operation -- matches its specification on all 300 cases of
-`examples/act_merge_check.rs`.
+`differential/src/bin/act_merge_check.rs`.
 
 ## Sharing
 
@@ -557,7 +557,7 @@ into observable results, that is a finding — 8, 14, 15 and 16 all are.
 Two properties the differential harness cannot reach are checked directly:
 
 ```bash
-cargo run --example sharing_check
+cargo run -p differential --bin sharing_check
 ```
 
 * **Copy-on-write** — graft one source into three places, write under one, and

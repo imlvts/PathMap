@@ -15,4 +15,4 @@ of them reduce to a snippet small enough to write out as a Rust example.
 | `status-imprecise-restrict.bin` | `restrict` reports `Element` where the trie is provably unchanged (FINDINGS.md #8) |
 
 Everything else in FINDINGS.md has a standalone reproducer instead; see
-`cargo run --example zipper_bug_repros -- --list`.
+`cargo run -p differential --bin zipper_bug_repros -- --list`.

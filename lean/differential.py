@@ -6,11 +6,11 @@ traces.  All of them decode the same bytes with the same rules; see
 `lean/PathMapModel/Fuzz.lean` for the wire format.
 
     lean/.lake/build/bin/pathmap-oracle     the Lean model  (always)
-    target/*/examples/pathmap_trace        the real crate  (default)
-    target/*/examples/act_trace            ACT read source (--act)
+    target/*/pathmap_trace                 the real crate  (default)
+    target/*/act_trace                     ACT read source (--act)
 
 Each child is spawned once with `--server` and stays resident, taking inputs as
-`run-input <timeout-ms> <hex>` on stdin; see `examples/common/server.rs` for the
+`run-input <timeout-ms> <hex>` on stdin; see `differential/src/server.rs` for the
 protocol.  That replaced a temp file and two fresh processes per input, which
 cost about 5x the runtime and left `/tmp/pathmap-diff-*` behind forever.  Only a
 *failing* input is written to disk now, so it can still be replayed and shrunk.
@@ -32,12 +32,12 @@ import tempfile
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ORACLE = os.path.join(ROOT, "lean", ".lake", "build", "bin", "pathmap-oracle")
 TRACE_CANDIDATES = [
-    os.path.join(ROOT, "target", "release", "examples", "pathmap_trace"),
-    os.path.join(ROOT, "target", "debug", "examples", "pathmap_trace"),
+    os.path.join(ROOT, "target", "release", "pathmap_trace"),
+    os.path.join(ROOT, "target", "debug", "pathmap_trace"),
 ]
 ACT_CANDIDATES = [
-    os.path.join(ROOT, "target", "release", "examples", "act_trace"),
-    os.path.join(ROOT, "target", "debug", "examples", "act_trace"),
+    os.path.join(ROOT, "target", "release", "act_trace"),
+    os.path.join(ROOT, "target", "debug", "act_trace"),
 ]
 # Seconds a single input may take.  Measured over 2000 random programs against
 # the real crate, the non-hanging ones run in p50 0.19ms / p100 1.21ms, so this
@@ -52,8 +52,8 @@ def find_trace_bin(act):
             return c
     if act:
         sys.exit("build the ACT side first: "
-                 "cargo build --release --features arena_compact --example act_trace")
-    sys.exit("build the crate side first: cargo build --release --example pathmap_trace")
+                 "cargo build --release -p differential")
+    sys.exit("build the crate side first: cargo build --release -p differential")
 
 
 class Child:
@@ -62,7 +62,7 @@ class Child:
     Spawning a process per input dominated the old runtime — 200 inputs spent
     more time in `sys` (fork/exec) than in `user` — so each front end now stays
     up and takes work as `run-input <timeout-ms> <hex>`, replying with the trace
-    and one `!`-prefixed terminator.  See `examples/common/server.rs`.
+    and one `!`-prefixed terminator.  See `differential/src/server.rs`.
 
     Two failure modes have to be survivable, because a wedged or dead child must
     not take the run with it:
@@ -192,7 +192,7 @@ class Child:
 # the line-number shifts between branches.  Semantic entries key on the name of
 # the first operation whose trace line differs; panic entries key on the file
 # and message.  See lean/FINDINGS.md for the write-up of each, and
-# `cargo run --example zipper_bug_repros -- <case>` for a reproducer.
+# `cargo run -p differential --bin zipper_bug_repros -- <case>` for a reproducer.
 KNOWN = [
     (["ESCAPED-ROOT"],
      "a zipper left its own root: root_prefix_path() changed [root_escape]"),

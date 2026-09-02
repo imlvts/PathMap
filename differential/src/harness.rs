@@ -1,21 +1,22 @@
-// Shared fuzzing harness for `pathmap`'s zipper API.
-//
-// One decoder, used by two front ends:
-//
-// * `examples/pathmap_trace.rs` prints a trace, which `lean/differential.py`
-//   diffs against the Lean model's trace for the same bytes.
-// * `examples/act_trace.rs` does the same with an `ArenaCompactTree` as the
-//   read source.
-//
-// Either one, given `--check`, also asserts structural invariants in-process
-// after every operation (no oracle needed).
-//
-// The wire format and operation table are a contract shared with
-// `lean/PathMapModel/Fuzz.lean`; any change here must be mirrored there.
-//
-// Included with `include!`, not `mod`, because the two front ends live in
-// different crates.
+//! Shared fuzzing harness for `pathmap`'s zipper API.
+//!
+//! One decoder, used by two front ends:
+//!
+//! * `bin/pathmap_trace.rs` prints a trace, which `lean/differential.py`
+//!   diffs against the Lean model's trace for the same bytes.
+//! * `bin/act_trace.rs` does the same with an `ArenaCompactTree` as the
+//!   read source.
+//!
+//! Either one, given `--check`, also asserts structural invariants in-process
+//! after every operation (no oracle needed).
+//!
+//! The wire format and operation table are a contract shared with
+//! `lean/PathMapModel/Fuzz.lean`; any change here must be mirrored there.
 
+use pathmap::PathMap;
+use pathmap::ring::AlgebraicStatus;
+use pathmap::utils::ByteMask;
+use pathmap::zipper::*;
 
 // The trace is written into one growable buffer rather than a `Vec<String>`.
 // It used to be ~260 separately allocated `String`s per input, thrown away as
@@ -24,48 +25,48 @@
 use core::fmt::Write as _;
 
 /// Number of distinct operations. Must match `PathMapModel.Fuzz.nops`.
-const NOPS: usize = 56;
+pub const NOPS: usize = 56;
 /// Maximum operations executed. Must match the `maxSteps` default in `Fuzz.run`.
-const MAX_STEPS: usize = 256;
+pub const MAX_STEPS: usize = 256;
 /// Maximum entries in a `dump`. Must match `Fuzz.dumpAt`.
-const DUMP_CAP: usize = 64;
+pub const DUMP_CAP: usize = 64;
 
-struct Dec<'a> {
-    bytes: &'a [u8],
-    pos: usize,
+pub struct Dec<'a> {
+    pub bytes: &'a [u8],
+    pub pos: usize,
 }
 
 impl<'a> Dec<'a> {
-    fn u8(&mut self) -> Option<u8> {
+    pub fn u8(&mut self) -> Option<u8> {
         let b = *self.bytes.get(self.pos)?;
         self.pos += 1;
         Some(b)
     }
-    fn modn(&mut self, m: usize) -> Option<usize> {
+    pub fn modn(&mut self, m: usize) -> Option<usize> {
         let b = self.u8()?;
         Some(if m == 0 { 0 } else { (b as usize) % m })
     }
     /// Path bytes live in a 4-letter alphabet so generated tries share prefixes.
-    fn path_byte(&mut self) -> Option<u8> {
+    pub fn path_byte(&mut self) -> Option<u8> {
         Some(self.u8()? % 4)
     }
-    fn path_n(&mut self, n: usize) -> Option<Vec<u8>> {
+    pub fn path_n(&mut self, n: usize) -> Option<Vec<u8>> {
         let mut v = Vec::with_capacity(n);
         for _ in 0..n {
             v.push(self.path_byte()?);
         }
         Some(v)
     }
-    fn path(&mut self, lim: usize) -> Option<Vec<u8>> {
+    pub fn path(&mut self, lim: usize) -> Option<Vec<u8>> {
         let n = self.modn(lim)?;
         self.path_n(n)
     }
-    fn boolean(&mut self) -> Option<bool> {
+    pub fn boolean(&mut self) -> Option<bool> {
         Some(self.u8()? % 2 == 1)
     }
 }
 
-fn hex_path(p: &[u8]) -> String {
+pub fn hex_path(p: &[u8]) -> String {
     if p.is_empty() {
         "_".to_string()
     } else {
@@ -73,7 +74,7 @@ fn hex_path(p: &[u8]) -> String {
     }
 }
 
-fn show_val(v: Option<&u64>) -> String {
+pub fn show_val(v: Option<&u64>) -> String {
     match v {
         None => "-".to_string(),
         Some(v) => format!("{v}"),
@@ -81,14 +82,14 @@ fn show_val(v: Option<&u64>) -> String {
 }
 
 /// Render a status the read source may have declined to produce.
-fn show_status_opt(s: Option<AlgebraicStatus>) -> String {
+pub fn show_status_opt(s: Option<AlgebraicStatus>) -> String {
     match s {
         Some(s) => show_status(s).to_string(),
         None => "skip".to_string(),
     }
 }
 
-fn show_status(s: AlgebraicStatus) -> &'static str {
+pub fn show_status(s: AlgebraicStatus) -> &'static str {
     match s {
         AlgebraicStatus::Element => "Element",
         AlgebraicStatus::Identity => "Identity",
@@ -96,13 +97,13 @@ fn show_status(s: AlgebraicStatus) -> &'static str {
     }
 }
 
-fn show_bool(b: bool) -> &'static str {
+pub fn show_bool(b: bool) -> &'static str {
     if b { "1" } else { "0" }
 }
 
 /// Render the `Option<u8>` the movement operations now return under the
 /// blind-zipper contract: the byte moved to, or `-` for "did not move".
-fn show_byte_opt(b: Option<u8>) -> String {
+pub fn show_byte_opt(b: Option<u8>) -> String {
     match b {
         None => "-".to_string(),
         Some(b) => format!("{b:02x}"),
@@ -115,7 +116,7 @@ fn show_byte_opt(b: Option<u8>) -> String {
 /// leave it, so a mismatch is tagged `ESCAPED-ROOT` — the model can never
 /// produce that tag, which lets `differential.py` recognise the escape bug
 /// instead of reporting it as an unexplained state divergence.
-fn fingerprint<Z: ZipperMoving + ZipperPath + ZipperValues<u64> + ZipperAbsolutePath>(
+pub fn fingerprint<Z: ZipperMoving + ZipperPath + ZipperValues<u64> + ZipperAbsolutePath>(
     z: &Z,
     expected_root: &[u8],
 ) -> String {
@@ -139,12 +140,12 @@ fn fingerprint<Z: ZipperMoving + ZipperPath + ZipperValues<u64> + ZipperAbsolute
 /// `take_map`, `restrict`) hinge on whether an *empty node* happens to be
 /// materialised at the focus rather than on the logical state, so the harness
 /// masks them here.  See lean/README.md.
-fn focus_node_empty<Z: Zipper>(z: &Z) -> bool {
+pub fn focus_node_empty<Z: Zipper>(z: &Z) -> bool {
     z.child_count() == 0
 }
 
 /// Depth-first dump of everything at and below the zipper's root, relative to it.
-fn dump<Z: ZipperMoving + ZipperPath + ZipperValues<u64>>(z: &mut Z) -> String {
+pub fn dump<Z: ZipperMoving + ZipperPath + ZipperValues<u64>>(z: &mut Z) -> String {
     z.reset();
     let mut lines = vec![format!("{}:{}", hex_path(z.path()), show_val(z.val()))];
     while lines.len() < DUMP_CAP && z.to_next_step() {
@@ -173,7 +174,7 @@ fn dump<Z: ZipperMoving + ZipperPath + ZipperValues<u64>>(z: &mut Z) -> String {
 ///
 /// Keeping this behind a trait means there is still exactly one operation table,
 /// so the two front ends cannot drift apart.
-trait ReadSource:
+pub trait ReadSource:
     Zipper + ZipperMoving + ZipperPath + ZipperValues<u64> + ZipperAbsolutePath + ZipperIteration
 {
     /// Depth-first dump of everything below the focus (`fork_read_zipper` + walk).
@@ -297,7 +298,7 @@ macro_rules! tgt {
 /// These need no oracle, so `--check` can assert them on every step.
 /// Violations are `pathmap` bugs by construction: each is either stated in the
 /// trait documentation or forced by the meaning of the accessors.
-fn check_zipper<Z>(z: &Z, label: &str, expected_root: &[u8])
+pub fn check_zipper<Z>(z: &Z, label: &str, expected_root: &[u8])
 where
     Z: ZipperMoving + ZipperPath + ZipperValues<u64> + ZipperAbsolutePath,
 {
@@ -365,7 +366,7 @@ where
 /// asserting, and a crate that violates an invariant should show up as a trace
 /// diff rather than as an abort.
 /// Decode the header: two seeded maps and the two zipper roots.
-fn decode_header(d: &mut Dec) -> Option<(PathMap<u64>, PathMap<u64>, Vec<u8>, Vec<u8>)> {
+pub fn decode_header(d: &mut Dec) -> Option<(PathMap<u64>, PathMap<u64>, Vec<u8>, Vec<u8>)> {
     {
         let mut m0 = PathMap::<u64>::new();
         let n0 = d.modn(8)?;
@@ -398,10 +399,7 @@ fn decode_header(d: &mut Dec) -> Option<(PathMap<u64>, PathMap<u64>, Vec<u8>, Ve
 
 /// Decode and execute a fuzzer input against a `PathMap` read source.
 ///
-/// `allow(dead_code)` because this file is `include!`d by three front ends and
-/// `act_trace` supplies its own entry point instead.
-#[allow(dead_code)]
-fn run(bytes: &[u8], check: bool) -> String {
+pub fn run(bytes: &[u8], check: bool) -> String {
     let mut d = Dec { bytes, pos: 0 };
     let (mut map0, map1, root0, root1) = match decode_header(&mut d) {
         Some(x) => x,
@@ -425,7 +423,7 @@ fn run(bytes: &[u8], check: bool) -> String {
 
 /// Run the operation table.  This is the single shared body: the two front ends
 /// differ only in what they hand in as `rz`.
-fn run_ops<R: ReadSource>(
+pub fn run_ops<R: ReadSource>(
     d: &mut Dec,
     out: &mut String,
     map0: &mut PathMap<u64>,
@@ -936,9 +934,3 @@ fn run_ops<R: ReadSource>(
     }
 
 }
-
-// The resident-server protocol.
-include!("server.rs");
-
-// Turning a failing input back into standalone `pathmap` calls.
-include!("repro.rs");

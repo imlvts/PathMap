@@ -1,9 +1,9 @@
 //! Minimal reproducers for the `ArenaCompactTree` defects the Lean differential
 //! model turned up.  See `lean/FINDINGS.md`.
 //!
-//!     cargo run --features arena_compact --example act_bug_repros -- --list
-//!     cargo run --features arena_compact --example act_bug_repros -- <name>
-//!     cargo run --features arena_compact --example act_bug_repros -- --all
+//!     cargo run -p differential --bin act_bug_repros -- --list
+//!     cargo run -p differential --bin act_bug_repros -- <name>
+//!     cargo run -p differential --bin act_bug_repros -- --all
 
 use pathmap::PathMap;
 use pathmap::arena_compact::ArenaCompactTree;

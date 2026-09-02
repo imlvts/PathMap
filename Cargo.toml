@@ -143,18 +143,5 @@ harness = false
 required-features = ["arena_compact", "serialization"]
 
 [workspace]
-members = ["pathmap-derive", "examples/sampling", "examples/arena_compact_tests"]
+members = ["pathmap-derive", "examples/sampling", "examples/arena_compact_tests", "differential"]
 resolver = "2"
-
-# Differential trace with an ArenaCompactTree read source; see lean/README.md.
-[[example]]
-name = "act_trace"
-required-features = ["arena_compact"]
-
-[[example]]
-name = "act_bug_repros"
-required-features = ["arena_compact"]
-
-[[example]]
-name = "act_merge_check"
-required-features = ["arena_compact"]

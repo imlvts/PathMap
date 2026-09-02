@@ -1,6 +1,6 @@
 //! Checks `ArenaCompactTree::merge_zipper_into_file` against its specification.
 //!
-//!     cargo run --features arena_compact --example act_merge_check
+//!     cargo run -p differential --bin act_merge_check
 //!
 //! ACT has no write zipper, but it can be *merged into*: given an ACT on disk
 //! and a zipper over some other trie, `merge_zipper_into_file` writes a new ACT

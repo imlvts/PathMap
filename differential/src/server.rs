@@ -1,7 +1,5 @@
-// ===========================================================================
-// Server mode
-// ===========================================================================
-//
+//! Server mode.
+//!
 // One process, many inputs.  Spawning a fresh process per fuzzer input costs
 // more than running the input does — a differential pass over 200 inputs spends
 // more time in `sys` (fork/exec) than in `user` — so the trace binaries can
@@ -33,7 +31,6 @@
 /// Thread-local rather than global: the hook runs on the panicking thread, so a
 /// leaked thread that panics long after its input timed out writes to its own
 /// slot and cannot contaminate the result of whatever is running now.
-#[allow(dead_code)]
 mod server_panic {
     use std::cell::RefCell;
     thread_local! {
@@ -44,13 +41,11 @@ mod server_panic {
 /// Escape a panic message to one line, so it cannot be mistaken for extra
 /// output.  Panic payloads are routinely multi-line (`assertion \`left == right\`
 /// failed\n  left: 1\n right: 2`).
-#[allow(dead_code)]
-fn escape_line(s: &str) -> String {
+pub fn escape_line(s: &str) -> String {
     s.replace('\\', "\\\\").replace('\n', "\\n").replace('\r', "\\r")
 }
 
-#[allow(dead_code)]
-fn hex_decode(s: &str) -> Option<Vec<u8>> {
+pub fn hex_decode(s: &str) -> Option<Vec<u8>> {
     if s.len() % 2 != 0 {
         return None;
     }
@@ -63,12 +58,9 @@ fn hex_decode(s: &str) -> Option<Vec<u8>> {
 /// Read commands from stdin until `quit` or EOF.
 ///
 /// `runner` is the front end's own decode-and-execute function and `flag` is the
-/// bool it takes — `check` for `pathmap_trace`/`act_trace`, `act` for the
-/// reference model.  Nothing else here knows anything about tries: this file is
-/// plumbing, which is why the reference model may share it without breaking its
-/// rule against sharing code with the crate.
-#[allow(dead_code)]
-fn serve(flag: bool, runner: fn(&[u8], bool) -> String) {
+/// bool it takes (`check` for `pathmap_trace` / `act_trace`).  Nothing else here
+/// knows anything about tries: this file is plumbing.
+pub fn serve(flag: bool, runner: fn(&[u8], bool) -> String) {
     use std::io::{BufRead, Write};
     use std::sync::mpsc;
     use std::time::Duration;

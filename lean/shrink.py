@@ -13,10 +13,10 @@ ORACLE = os.path.join(ROOT, "lean", ".lake", "build", "bin", "pathmap-oracle")
 # Release by default, matching differential.py: a debug build turns several
 # known bugs into panics, and the shrinker would then collapse every input onto
 # whichever panic it hits first.  `--debug` shrinks toward a panic on purpose.
-TRACE_RELEASE = os.path.join(ROOT, "target", "release", "examples", "pathmap_trace")
-TRACE_DEBUG = os.path.join(ROOT, "target", "debug", "examples", "pathmap_trace")
-ACT_RELEASE = os.path.join(ROOT, "target", "release", "examples", "act_trace")
-ACT_DEBUG = os.path.join(ROOT, "target", "debug", "examples", "act_trace")
+TRACE_RELEASE = os.path.join(ROOT, "target", "release", "pathmap_trace")
+TRACE_DEBUG = os.path.join(ROOT, "target", "debug", "pathmap_trace")
+ACT_RELEASE = os.path.join(ROOT, "target", "release", "act_trace")
+ACT_DEBUG = os.path.join(ROOT, "target", "debug", "act_trace")
 TRACE = TRACE_RELEASE
 ORACLE_ARGS = []
 TMP = os.path.join(ROOT, "lean", ".shrink.bin")
