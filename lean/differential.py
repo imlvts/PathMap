@@ -7,7 +7,6 @@ traces.  All of them decode the same bytes with the same rules; see
 
     lean/.lake/build/bin/pathmap-oracle     the Lean model  (always)
     target/*/examples/pathmap_trace        the real crate  (default)
-    target/*/examples/reference            the Rust model  (--model)
     target/*/examples/act_trace            ACT read source (--act)
 
 Each child is spawned once with `--server` and stays resident, taking inputs as
@@ -18,12 +17,6 @@ cost about 5x the runtime and left `/tmp/pathmap-diff-*` behind forever.  Only a
 
     ./lean/differential.py corpus/*                # check a corpus
     ./lean/differential.py --random 500            # generate and check
-    ./lean/differential.py --model --random 500    # check the Rust port
-
-`--model` is the acceptance test for `examples/reference/`: it compares two
-independent transcriptions of the same specification, in different languages,
-with the crate not involved at all.  So the KNOWN table below does not apply —
-every divergence is a bug in one of the two models, and none may be tolerated.
 """
 import argparse
 import multiprocessing
@@ -46,10 +39,6 @@ ACT_CANDIDATES = [
     os.path.join(ROOT, "target", "release", "examples", "act_trace"),
     os.path.join(ROOT, "target", "debug", "examples", "act_trace"),
 ]
-MODEL_CANDIDATES = [
-    os.path.join(ROOT, "target", "release", "examples", "reference"),
-    os.path.join(ROOT, "target", "debug", "examples", "reference"),
-]
 # Seconds a single input may take.  Measured over 2000 random programs against
 # the real crate, the non-hanging ones run in p50 0.19ms / p100 1.21ms, so this
 # is ~1600x the worst legitimate case and still cuts the cost of a hang by 15x
@@ -57,19 +46,10 @@ MODEL_CANDIDATES = [
 TIMEOUT = 2.0
 
 
-def find_trace_bin(act, model=False):
-    if model:
-        candidates = MODEL_CANDIDATES
-    elif act:
-        candidates = ACT_CANDIDATES
-    else:
-        candidates = TRACE_CANDIDATES
-    for c in candidates:
+def find_trace_bin(act):
+    for c in (ACT_CANDIDATES if act else TRACE_CANDIDATES):
         if os.path.exists(c):
             return c
-    if model:
-        sys.exit("build the Rust model first: "
-                 "cargo build --release --example reference")
     if act:
         sys.exit("build the ACT side first: "
                  "cargo build --release --features arena_compact --example act_trace")
@@ -481,9 +461,6 @@ def main():
     ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("--act", action="store_true",
                     help="use an ArenaCompactTree as the read source")
-    ap.add_argument("--model", action="store_true",
-                    help="compare the Lean model against the Rust model "
-                         "(examples/reference/) instead of against the crate")
     ap.add_argument("-j", "--jobs", type=int, default=1,
                     help="run this many worker processes in parallel "
                          "(each owns its own pair of children)")
@@ -494,8 +471,8 @@ def main():
     args = ap.parse_args()
     TIMEOUT = args.timeout
 
-    trace_bin = find_trace_bin(args.act, args.model)
-    other_label = "rust" if args.model else "crate"
+    trace_bin = find_trace_bin(args.act)
+    other_label = "crate"
 
     # Inputs are produced by an `InputSource`, in whichever worker picks the
     # index up -- see the class docs.  Nothing is written to disk and no blob is
@@ -512,7 +489,7 @@ def main():
     n_inputs = len(source)
 
     oracle_argv = [ORACLE] + (["--act"] if args.act else [])
-    other_argv = [trace_bin] + (["--act"] if (args.act and args.model) else [])
+    other_argv = [trace_bin]
     faildir = []          # created on first failure only
 
     def save(idx):
@@ -537,9 +514,7 @@ def main():
             if args.verbose:
                 print("ok   %s" % name)
             return False
-        # Model against model: the KNOWN table is a list of *crate* defects, and
-        # the crate is not involved.  Every divergence is new.
-        note = None if args.model else classify(msg)
+        note = classify(msg)
         if note:
             known[note] = known.get(note, 0) + 1
             if args.verbose:

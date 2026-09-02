@@ -15,10 +15,9 @@
 
 
 // The trace is written into one growable buffer rather than a `Vec<String>`.
-// It used to be ~260 separately allocated `String`s per input per side, which
-// the in-process differential fuzzer pays for twice on every input and then
-// throws away; only a divergence needs the individual lines, and `str::lines()`
-// recovers them then.
+// It used to be ~260 separately allocated `String`s per input, thrown away as
+// soon as they were printed; only a divergence needs the individual lines, and
+// `str::lines()` recovers them then.
 use core::fmt::Write as _;
 
 /// Number of distinct operations. Must match `PathMapModel.Fuzz.nops`.
@@ -935,7 +934,7 @@ fn run_ops<R: ReadSource>(
 
 }
 
-// The resident-server protocol, shared with `examples/reference/`.
+// The resident-server protocol.
 include!("server.rs");
 
 // Turning a failing input back into standalone `pathmap` calls.

@@ -30,8 +30,7 @@ only line beginning with `!`:
     !PANIC <one-line message>       malformed command
 
 Prints the trace produced by the model.  `examples/pathmap_trace.rs` prints the
-same trace from the real crate for the same input bytes,
-`examples/reference/main.rs` prints it from the Rust model, and
+same trace from the real crate for the same input bytes, and
 `examples/act_trace.rs` does the same with an `ArenaCompactTree` as the read
 source; they are compared by `lean/differential.py`.
 -/
