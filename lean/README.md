@@ -154,6 +154,7 @@ focus, such that ..." — instead of as a node walk.
 | `PathMapModel/Spec.lean` | §1 proved laws (the cursor algebra); §2 checkable laws (metamorphic properties) |
 | `PathMapModel/Hash.lean` | the logical trie hash (`CatamorphismCached::hash` under `Fnv1a64Scheme`), defined over the flat representation so node layout cannot enter |
 | `PathMapModel/HashSecurity.lean` | the scheme's collision reduction: two logically different tries that hash alike exhibit a collision of the primitive, for any primitive |
+| `PathMapModel/GraftNoop.lean` | `wz.graft(&rz)` is a no-op when the two foci hash alike (or the primitive collided); on the way, what `mk'`, `removeBelow`, `graftBelow`, `setVal`, `removeVal` and `subtrie` do, as observations |
 | `PathMapModel/Check.lean` | `#guard`s: regression fixtures transcribed from `src/write_zipper.rs`'s own tests, and the §2 laws over a battery of tries |
 | `PathMapModel/Fuzz.lean` | the wire format, the operation table, and the trace producer (including `--act` mode) |
 | `Main.lean` | the `pathmap-oracle` binary |
@@ -611,6 +612,17 @@ whose popcount fixes how many fixed-width digests follow, and hash the empty
 message when fuel runs out.  It says nothing about the primitive: gxhash makes
 no collision-resistance claim, so this is a statement about the scheme, and the
 primitive is treated as replaceable.
+
+`GraftNoop.lean` takes this to the operation merkleize actually performs.
+`graft_noop_of_hash_eq`: if `hash(wz) = hash(rz)` under an ideal primitive, then
+`wz.graft(&rz)` leaves every `Entry` of the write map as it was;
+`collision_of_graft_ne` is the unconditional contrapositive, and
+`graft_noop_of_hashU64_eq` the instance for the harness's maps.  Most of that
+file characterizes the model's normalizer `mk'` (`valAt_mk'`, `pathExists_mk'`)
+and, from it, the write operations as observations rather than list
+manipulations; those lemmas need no hashing and are there for `Spec.lean` to
+use.  The hypotheses are the canonical-form invariants: the write map is
+prefix-closed with an existing root, the source is prefix-closed.
 
 Four ops exercise it: `hash` (target zipper's focus, recursive engine),
 `hash_iter` (read zipper, zipper-driven engine, also on an ACT source),

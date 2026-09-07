@@ -1,5 +1,6 @@
 import PathMapModel.Spec
 import PathMapModel.Hash
+import PathMapModel.GraftNoop
 
 /-!
 # Build-time checks
@@ -246,6 +247,15 @@ hash of the node below it, and the hash at a position sees nothing above it. -/
 -- The mask bitmap: byte `b` sets bit `b % 8` of byte `b / 8`.
 #guard Hash.maskBytes [0, 9, 255] == [1, 2] ++ List.replicate 29 0 ++ [128]
 #guard Hash.maskBytes [] == List.replicate 32 0
+
+-- `GraftNoop.lean`, executed: grafting a hash-equal subtrie (here, the same contents built in a
+-- different order, at a focus inside the trie) leaves every entry as it was.
+def fBranchAgain : T := mk [([1], 4), ([0,1], 3), ([0,0], 2), ([0], 1), ([], 0)]
+#guard Hash.hashU64 fBranch [0] == Hash.hashU64 fBranchAgain [0]
+#guard ((zipAt fBranch [] [0]).graft (zipAt fBranchAgain [] [0])).trie.entries == fBranch.entries
+#guard ((zipAt fBranch [] []).graft (zipAt fBranchAgain [] [])).trie.entries == fBranch.entries
+-- and a graft that is not hash-equal does change it
+#guard ((zipAt fBranch [] [0]).graft (zipAt fRun [] [])).trie.entries != fBranch.entries
 
 -- Rendering matches `format!("{:016x}")`.
 #guard Hash.hex64 0 == "0000000000000000"
