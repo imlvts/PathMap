@@ -6319,7 +6319,7 @@ mod tests {
     /// every catamorphism engine (the PR #31 iterative engine loops on it).
     #[test]
     fn write_zipper_drop_head_shared_first_byte_is_canonical() {
-        use crate::morphisms::Catamorphism;
+        use crate::morphisms::{CatamorphismCached, CatamorphismCachedIterative};
         let mut m = PathMap::<()>::new();
         for k in [b"aaa".as_slice(), b"bab"] { m.set_val_at(k, ()); }
         assert!(m.write_zipper().join_k_path_into(1, false));
@@ -6331,8 +6331,8 @@ mod tests {
         assert_eq!(rz.child_count(), 2);
         assert!(rz.descend_indexed_byte(1).is_some());
         //the (zipper-driven) cached cata must agree with iteration
-        let n = m.read_zipper().into_cata_cached(|_m, ws: &mut [usize], v: Option<&()>| ws.iter().sum::<usize>() + v.is_some() as usize);
-        assert_eq!(n, 2);
+        assert_eq!(CatamorphismCachedIterative::val_count(&m.read_zipper()), 2);
+        assert_eq!(CatamorphismCached::val_count(&m.read_zipper()), 2);
         assert_valid_trie(m.root());
 
         //the same through a shared (grafted) subtrie, as the randomized program found it
@@ -6341,8 +6341,8 @@ mod tests {
         for k in [b"".as_slice(), b"a", b"aaaa", b"abab", b"b", b"ba", b"baa", b"bbaa", b"bbb"] { other.set_val_at(k, ()); }
         { let mut rz = other.read_zipper(); rz.descend_to(b"a"); let mut wz = map.write_zipper(); wz.graft(&rz); }
         assert!(map.write_zipper().join_k_path_into(1, false));
-        let n = map.read_zipper().into_cata_cached(|_m, ws: &mut [usize], v: Option<&()>| ws.iter().sum::<usize>() + v.is_some() as usize);
-        assert_eq!(n, 3);
+        assert_eq!(CatamorphismCachedIterative::val_count(&map.read_zipper()), 3);
+        assert_eq!(CatamorphismCached::val_count(&map.read_zipper()), 3);
         assert_valid_trie(map.root());
     }
 

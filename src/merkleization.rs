@@ -23,12 +23,11 @@
 // the same as an Rc `weak`, but a similar idea)
 
 use core::convert::Infallible;
-use core::hash::{Hash, Hasher};
 use std::collections::hash_map::Entry;
 
 use crate::alloc::Allocator;
 use crate::gxhash;
-use crate::morphisms::trie_hash;
+use crate::morphisms::trie_hash::HashScheme;
 use crate::trie_node::*;
 use crate::utils::ByteMask;
 
@@ -57,21 +56,26 @@ pub struct MerkleizeResult {
 /// The cata records the value-free hash of every node, in the order it finishes them.  A second,
 /// bottom-up pass over the physical nodes then replaces every child whose hash was seen before with
 /// the first node that produced that hash.
-pub(crate) fn merkleize_root<V, A>(root: &TrieNodeODRc<V, A>, root_val: Option<&V>) -> (MerkleizeResult, Option<TrieNodeODRc<V, A>>)
+///
+/// `scheme` is the [`HashScheme`] the hashes are computed with.  Only
+/// [`GxHashScheme`](crate::morphisms::trie_hash::GxHashScheme) is used outside of tests: merkleize
+/// merges subtries whose hashes are equal, so the scheme must be one whose collisions are negligible
+pub(crate) fn merkleize_root<V, A, S>(root: &TrieNodeODRc<V, A>, root_val: Option<&V>, scheme: &S) -> (MerkleizeResult, Option<TrieNodeODRc<V, A>>)
     where
-        V: Clone + Send + Sync + Hash,
+        V: Clone + Send + Sync,
         A: Allocator,
+        S: HashScheme<V>,
 {
     let mut result = MerkleizeResult::default();
 
     let mut hashes = NodeHashes::default();
-    let start_f = |bm: &ByteMask| Ok::<_, Infallible>(trie_hash::node_hasher(bm));
-    let fold_child_f = |_bm: &ByteMask, child: u128, hasher: &mut gxhash::GxHasher| { hasher.write_u128(child); Ok(()) };
-    let leaf = trie_hash::leaf();
-    let step_up = |mut w: u128, prefix: &[u8]| { for byte in prefix.iter().rev() { w = trie_hash::step(*byte, w); } w };
-    let map_f = |value: &V, prefix: &[u8]| Ok(step_up(trie_hash::with_value(trie_hash::value_hash(value), leaf), prefix));
-    let finalize_f = |bm: &ByteMask, hasher: Option<gxhash::GxHasher>, prefix: &[u8]| Ok(step_up(hasher.unwrap_or_else(|| trie_hash::node_hasher(bm)).finish_u128(), prefix));
-    let collapse_f = |value: &V, below: u128| Ok(trie_hash::with_value(trie_hash::value_hash(value), below));
+    let start_f = |bm: &ByteMask| Ok::<_, Infallible>(scheme.start(bm));
+    let fold_child_f = |_bm: &ByteMask, child: u128, acc: &mut S::Acc| { scheme.child(acc, child); Ok(()) };
+    let leaf = scheme.leaf();
+    let step_up = |mut w: u128, prefix: &[u8]| { for byte in prefix.iter().rev() { w = scheme.step(*byte, w); } w };
+    let map_f = |value: &V, prefix: &[u8]| Ok(step_up(scheme.with_value(scheme.value(value), leaf), prefix));
+    let finalize_f = |bm: &ByteMask, acc: Option<S::Acc>, prefix: &[u8]| Ok(step_up(scheme.finish(acc.unwrap_or_else(|| scheme.start(bm))), prefix));
+    let collapse_f = |value: &V, below: u128| Ok(scheme.with_value(scheme.value(value), below));
     result.hash = match root_val {
         Some(val) => collapse_slot_val::<_, _, _, _, _, _, _, _, _, _, _, true>(root, val, start_f, fold_child_f, map_f, finalize_f, collapse_f, &mut hashes),
         None => recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, _, true>(root, start_f, fold_child_f, map_f, finalize_f, collapse_f, &mut hashes),
@@ -262,6 +266,230 @@ mod tests {
     use crate::morphisms::CatamorphismCached;
     use crate::trie_node::{TrieNodeODRc, NODE_ITER_FINISHED};
     use crate::zipper::*;
+    use crate::gxhash;
+
+    // ---- Sharing tests ported from the merkleize-fix branch ----
+
+    /// Walks every node reachable from `map`'s root and groups them by an
+    /// independently-computed *structural* key: the sorted list of
+    /// `(path, edge_value_hash, child_structural_key)` triples a node carries,
+    /// computed bottom-up without any reference to `merkleize_impl`'s own
+    /// hashing.  Returns, per structural key, every distinct node identity
+    /// (`shared_node_id`) found with that key -- callers decide what to
+    /// assert, since "before merkleize" legitimately has multiple identities
+    /// per class (that's the diversity merkleize exists to remove).
+    fn structural_classes<V>(map: &PathMap<V>) -> std::collections::HashMap<u128, Vec<u64>>
+        where V: Clone + Send + Sync + Unpin + std::hash::Hash
+    {
+        use std::hash::Hash;
+        use std::collections::HashMap;
+
+        fn structural_key<V>(
+            node: &TrieNodeODRc<V, crate::alloc::GlobalAlloc>,
+            seen: &mut HashMap<u64, u128>,
+            classes: &mut HashMap<u128, Vec<u64>>,
+        ) -> u128
+            where V: Clone + Send + Sync + std::hash::Hash
+        {
+            let id = node.shared_node_id();
+            if let Some(key) = seen.get(&id) {
+                return *key;
+            }
+            let mut parts: Vec<(Vec<u8>, u128)> = Vec::new();
+            let node_ref = node.as_tagged();
+            let mut it = node_ref.new_iter_token();
+            while it != NODE_ITER_FINISHED {
+                let (next, path, child, val) = node_ref.next_items(it);
+                it = next;
+                let edge_key = if let Some(child) = child {
+                    let child_key = structural_key(child, seen, classes);
+                    let mut hasher = gxhash::GxHasher::with_seed(0);
+                    val.hash(&mut hasher);
+                    child_key.hash(&mut hasher);
+                    hasher.finish_u128()
+                } else {
+                    let mut hasher = gxhash::GxHasher::with_seed(0);
+                    val.hash(&mut hasher);
+                    hasher.finish_u128()
+                };
+                parts.push((path.to_vec(), edge_key));
+            }
+            parts.sort();
+            let mut hasher = gxhash::GxHasher::with_seed(0);
+            parts.hash(&mut hasher);
+            let key = hasher.finish_u128();
+            seen.insert(id, key);
+            classes.entry(key).or_default().push(id);
+            key
+        }
+
+        let mut seen = HashMap::new();
+        let mut classes: HashMap<u128, Vec<u64>> = HashMap::new();
+        if let Some(root) = map.root() {
+            structural_key(root, &mut seen, &mut classes);
+        }
+        classes
+    }
+
+    /// Asserts that every structural class contains exactly one node
+    /// identity -- i.e. merkleization achieved *maximal* sharing.  Meant to
+    /// be called only on a trie that has already been merkleized; calling it
+    /// beforehand would spuriously fail, since un-merkleized tries are
+    /// expected to hold distinct-but-identical-shaped nodes.
+    ///
+    /// Returns the number of distinct structural classes found (a proxy for
+    /// "how many distinct node shapes remain").
+    fn assert_maximal_sharing<V>(map: &PathMap<V>) -> usize
+        where V: Clone + Send + Sync + Unpin + std::hash::Hash
+    {
+        let classes = structural_classes(map);
+        for (key, ids) in &classes {
+            let mut dedup_ids = ids.clone();
+            dedup_ids.sort();
+            dedup_ids.dedup();
+            assert_eq!(
+                dedup_ids.len(), 1,
+                "under-shared structural class {key:#x}: {} distinct node identities \
+                 ({} references) should have been merged into one",
+                dedup_ids.len(), ids.len(),
+            );
+        }
+        classes.len()
+    }
+
+    /// Regression test for the parent-edge-value-leaking-into-child-hash bug:
+    /// every bitstring of length 1..=4 over {0,1} ending in `1`, plus the empty
+    /// path.  Before the fix, `merkleize` folded the value reached via a
+    /// node's *parent* edge into the hash used to memoize the node itself, so
+    /// the same child node reached through a valued slot and an unvalued slot
+    /// were never deduplicated.  This trie is built so every level has one
+    /// child ending the path (valued) and one child continuing it
+    /// (unvalued), reaching an *otherwise identical* subtrie -- which
+    /// collapses to a single chain of 4 shared nodes once merkleization is
+    /// correct (was 7 with the bug).
+    #[test]
+    fn test_merkleize_dedups_value_vs_no_value_edges() {
+        let mut paths: Vec<Vec<u8>> = vec![vec![]];
+        for len in 1..=4usize {
+            for bits in 0..(1u32 << len) {
+                let p: Vec<u8> = (0..len)
+                    .map(|i| ((bits >> (len - 1 - i)) & 1) as u8)
+                    .collect();
+                if *p.last().unwrap() == 1 {
+                    paths.push(p);
+                }
+            }
+        }
+        let mut map = PathMap::from_iter(paths.iter().map(|p| (p.as_slice(), ())));
+        let before_ids: usize = structural_classes(&map).values().flatten().collect::<std::collections::HashSet<_>>().len();
+
+        let result = map.merkleize();
+        eprintln!("merkleize result: {result:?}");
+
+        let after_classes = assert_maximal_sharing(&map);
+        // The whole trie is one repeating shape, so after merkleization there
+        // should be exactly 4 distinct structural classes: the 4 nesting
+        // depths (the "()" leaf value counts as its own class, folded into
+        // the deepest node), each now backed by exactly one node identity.
+        assert_eq!(after_classes, 4, "expected exactly 4 distinct node shapes after merkleize");
+        assert!(after_classes < before_ids, "merkleize should have reduced the number of distinct node identities");
+        assert!(result.reused > 0, "merkleize should have found reusable nodes");
+    }
+
+    /// Adversarial: two sibling subtries are byte-for-byte identical *except*
+    /// that one is reached through a valued parent slot and the other
+    /// through an unvalued (dangling) one.  Structurally the two subtries
+    /// are identical, so they must merge.
+    #[test]
+    fn test_merkleize_value_and_dangling_siblings_share() {
+        let mut map = PathMap::<()>::new();
+        // valued edge into a subtrie: [0] itself carries a value
+        map.insert(&[0u8][..], ());
+        map.insert(&[0u8, 1, 0][..], ());
+        map.insert(&[0u8, 1, 1][..], ());
+        // dangling (no value) edge into the identical subtrie: [1] exists but is unvalued
+        map.create_path(&[1u8]);
+        map.insert(&[1u8, 1, 0][..], ());
+        map.insert(&[1u8, 1, 1][..], ());
+        let result = map.merkleize();
+        eprintln!("merkleize result: {result:?}");
+        assert_maximal_sharing(&map);
+        assert!(result.reused > 0);
+    }
+
+    /// Adversarial: identical subtries reached via *different* values at the
+    /// parent edge (not just "value" vs "no value").  These must remain
+    /// distinct (the edge value differs), but the child subtrie beneath each
+    /// must still be the same shared node.
+    #[test]
+    fn test_merkleize_distinguishes_different_edge_values_but_shares_children() {
+        let mut map = PathMap::<u8>::new();
+        map.insert(&[0u8][..], 1);
+        map.insert(&[0u8, 5, 0][..], 9);
+        map.insert(&[0u8, 5, 1][..], 9);
+        map.insert(&[1u8][..], 2); // different value at this edge
+        map.insert(&[1u8, 5, 0][..], 9);
+        map.insert(&[1u8, 5, 1][..], 9);
+        let before = crate::merkleization::tests::snapshot(&map);
+        let result = map.merkleize();
+        eprintln!("merkleize result: {result:?}");
+        assert_maximal_sharing(&map);
+        let after = crate::merkleization::tests::snapshot(&map);
+        assert_eq!(before, after, "merkleize must not change observable content");
+        assert!(result.reused > 0);
+    }
+
+    /// Adversarial: deeply nested, asymmetric repetition -- a chain of
+    /// dangling paths of increasing depth, where only some branches are
+    /// dangling and others carry values, all funnelling into the same
+    /// terminal shape.  Exercises multiple levels of the value/no-value
+    /// distinction stacked on top of each other, rather than just one level.
+    #[test]
+    fn test_merkleize_nested_mixed_dangling_and_valued() {
+        let mut map = PathMap::<()>::new();
+        for prefix in [
+            &[0u8][..], &[0u8, 0][..], &[1u8][..], &[1u8, 1][..], &[2u8, 0, 0][..],
+        ] {
+            // half dangling, half valued at each prefix
+            map.create_path(prefix);
+        }
+        map.insert(&[0u8, 1][..], ());
+        map.insert(&[1u8, 0][..], ());
+        map.insert(&[2u8, 0, 1][..], ());
+        // give every branch the same terminal subtrie shape
+        for base in [&[0u8, 0][..], &[0u8, 1][..], &[1u8, 0][..], &[1u8, 1][..], &[2u8, 0, 0][..], &[2u8, 0, 1][..]] {
+            let mut k = base.to_vec();
+            k.push(7);
+            map.insert(&k[..], ());
+            k.pop();
+            k.push(8);
+            map.insert(&k[..], ());
+        }
+        let before = crate::merkleization::tests::snapshot(&map);
+        let result = map.merkleize();
+        eprintln!("merkleize result: {result:?}");
+        assert_maximal_sharing(&map);
+        let after = crate::merkleization::tests::snapshot(&map);
+        assert_eq!(before, after, "merkleize must not change observable content");
+        assert!(result.reused > 0);
+    }
+
+    /// Snapshot the full observable (path, value) contents of a map, so tests
+    /// can assert `merkleize` never changes what the trie means, only how
+    /// it's represented.
+    pub(crate) fn snapshot<V: Clone + std::fmt::Debug>(map: &PathMap<V>) -> std::collections::BTreeMap<Vec<u8>, Option<V>>
+        where V: Send + Sync + Unpin
+    {
+        use crate::zipper::*;
+        let mut rz = map.read_zipper();
+        let mut out = std::collections::BTreeMap::new();
+        out.insert(Vec::new(), rz.val().cloned());
+        while rz.to_next_step() {
+            out.insert(rz.path().to_vec(), rz.val().cloned());
+        }
+        out
+    }
+
 
     /// Counts the distinct physical nodes reachable from the map root
     fn physical_node_count(map: &PathMap<()>) -> usize {
@@ -420,6 +648,150 @@ mod tests {
             viz_maps(&[btm], &DrawConfig::default(), &mut after).unwrap();
             eprintln!("after:");
             eprintln!("```mermaid\n{}```", std::str::from_utf8(&after).unwrap());
+        }
+    }
+
+    // ---- Exploration: node topology from IMG_0825 ----
+    //
+    // Requested topology, keys written as byte strings over {0, 1}:
+    //   root [ 0: [00: [0: V, 1: V]],  1: [0: [00: V, 01: V]] ]
+    // Both halves hold the paths {000, 001} below the root byte, laid out with node boundaries
+    // in different places.  Node 4 in the picture, a ListNode holding two values under keys `00`
+    // and `01`, is an "unfactored divergent prefix" and is rejected by `validate_node`.
+
+    fn dump_layout<V: Clone + Send + Sync + Unpin + std::fmt::Debug>(map: &PathMap<V>) -> String {
+        use crate::trie_node::TaggedNodeRef;
+        fn kind<V: Clone + Send + Sync, A: crate::alloc::Allocator>(t: &TaggedNodeRef<'_, V, A>) -> &'static str {
+            match t {
+                TaggedNodeRef::DenseByteNode(_) => "Dense",
+                TaggedNodeRef::LineListNode(_) => "List",
+                TaggedNodeRef::CellByteNode(_) => "Cell",
+                TaggedNodeRef::TinyRefNode(_) => "Tiny",
+                TaggedNodeRef::EmptyNode => "Empty",
+            }
+        }
+        fn walk<V: Clone + Send + Sync + std::fmt::Debug>(node: &TrieNodeODRc<V, crate::alloc::GlobalAlloc>, depth: usize, ids: &mut Vec<u64>, out: &mut String) {
+            let id = node.shared_node_id();
+            let idx = match ids.iter().position(|x| *x == id) { Some(i) => i, None => { ids.push(id); ids.len() - 1 } };
+            let t = node.as_tagged();
+            out.push_str(&format!("{}#{idx} {} rc={}\n", "  ".repeat(depth), kind(&t), node.refcount()));
+            let mut it = t.new_iter_token();
+            while it != NODE_ITER_FINISHED {
+                let (next, path, child, val) = t.next_items(it);
+                it = next;
+                if val.is_none() && child.is_none() { continue; }
+                out.push_str(&format!("{}  key {:?}{}{}\n", "  ".repeat(depth), path,
+                    if val.is_some() { " V" } else { "" }, if child.is_some() { " ->" } else { "" }));
+                if let Some(child) = child { walk(child, depth + 2, ids, out); }
+            }
+        }
+        let mut out = String::new();
+        let mut ids = Vec::new();
+        if let Some(root) = map.root() { walk(root, 0, &mut ids, &mut out); }
+        out.push_str(&format!("distinct nodes: {}\n", ids.len()));
+        out
+    }
+
+    fn assert_same_paths_and_report(label: &str, map: &mut PathMap<()>) -> MerkleizeResultView {
+        let before_paths = all_paths(map);
+        let before_layout = dump_layout(map);
+        let before_nodes = physical_node_count(map);
+        let result = map.merkleize();
+        let after_layout = dump_layout(map);
+        let after_nodes = physical_node_count(map);
+        eprintln!("==== {label} ====\n-- before ({before_nodes} nodes):\n{before_layout}-- merkleize: {result:?}\n-- after ({after_nodes} nodes):\n{after_layout}");
+        assert_eq!(all_paths(map), before_paths, "merkleize must not change contents");
+        assert_maximal_sharing(map);
+        MerkleizeResultView { before_nodes, after_nodes, reused: result.reused }
+    }
+    struct MerkleizeResultView { before_nodes: usize, after_nodes: usize, reused: usize }
+
+    /// The topology built by plain insertion, and by grafting so the `1` half gets different
+    /// node boundaries than the `0` half
+    #[test]
+    fn topology_img_0825_legal_layouts() {
+        // (a) natural layout from direct insertion
+        let mut natural = PathMap::<()>::new();
+        for p in [[0u8, 0, 0, 0], [0, 0, 0, 1], [1, 0, 0, 0], [1, 0, 0, 1]] { natural.insert(&p[..], ()); }
+        let r = assert_same_paths_and_report("natural insertion", &mut natural);
+        assert!(r.after_nodes <= r.before_nodes);
+
+        // (b) `0` half by insertion: 0 -> [00 -> {0: V, 1: V}]
+        //     `1` half by grafting:  1 -> [0 -> [0 -> {0: V, 1: V}]]  (the legal stand-in for [0 -> [00: V, 01: V]])
+        let mut map = PathMap::<()>::new();
+        map.insert(&[0u8, 0, 0, 0][..], ());
+        map.insert(&[0u8, 0, 0, 1][..], ());
+        let leaf: PathMap<()> = [[0u8].as_slice(), &[1u8]].into_iter().map(|k| (k, ())).collect();
+        let mut mid = PathMap::<()>::new();
+        { let mut wz = mid.write_zipper_at_path(&[0u8]); wz.graft_map(leaf); }
+        let mut outer = PathMap::<()>::new();
+        { let mut wz = outer.write_zipper_at_path(&[0u8]); wz.graft_map(mid); }
+        { let mut wz = map.write_zipper_at_path(&[1u8]); wz.graft_map(outer); }
+        let r = assert_same_paths_and_report("grafted: different boundaries under 1", &mut map);
+        assert!(r.reused >= 1, "the {{000, 001}} subtrie under `1` should collapse onto the one under `0`");
+
+        // (c) the reverse: `1` half by insertion, `0` half with the boundary directly below the root byte:
+        //     0 -> [0 -> [00 -> {0: V, 1: V}]] is not constructible either (a node with a single 2-byte
+        //     child key `00` and nothing else gets folded), so use 0 -> [0 -> [0 -> {0, 1}]] vs 1 -> [00 -> {0, 1}]
+        let mut map = PathMap::<()>::new();
+        map.insert(&[1u8, 0, 0, 0][..], ());
+        map.insert(&[1u8, 0, 0, 1][..], ());
+        let leaf: PathMap<()> = [[0u8].as_slice(), &[1u8]].into_iter().map(|k| (k, ())).collect();
+        let mut mid = PathMap::<()>::new();
+        { let mut wz = mid.write_zipper_at_path(&[0u8]); wz.graft_map(leaf); }
+        let mut outer = PathMap::<()>::new();
+        { let mut wz = outer.write_zipper_at_path(&[0u8]); wz.graft_map(mid); }
+        { let mut wz = map.write_zipper_at_path(&[0u8]); wz.graft_map(outer); }
+        let r = assert_same_paths_and_report("grafted: different boundaries under 0", &mut map);
+        assert!(r.reused >= 1);
+    }
+
+    /// Hand-builds the picture's node 4, `[00: V, 01: V]`, which the trie invariant forbids, to see
+    /// what the validator and merkleize do with it
+    #[test]
+    fn topology_img_0825_illegal_node4() {
+        use crate::alloc::global_alloc;
+        use crate::line_list_node::LineListNode;
+        use crate::trie_node::ValOrChild;
+
+        // `0` half: natural {000, 001} layout, taken from a map
+        let a: PathMap<()> = [[0u8, 0, 0].as_slice(), &[0u8, 0, 1]].into_iter().map(|k| (k, ())).collect();
+        let (a_root, _) = a.into_root();
+        let a_root = a_root.unwrap();
+
+        // `1` half: [0 -> [00: V, 01: V]]
+        let mut node4 = LineListNode::<(), _>::new_in(global_alloc());
+        unsafe {
+            node4.set_payload_owned::<0>(&[0u8, 0], ValOrChild::Val(()));
+            node4.set_payload_owned::<1>(&[0u8, 1], ValOrChild::Val(()));
+        }
+        let node4 = TrieNodeODRc::new_in(node4, global_alloc());
+        let mut node3 = LineListNode::<(), _>::new_in(global_alloc());
+        unsafe { node3.set_payload_owned::<0>(&[0u8], ValOrChild::Child(node4)); }
+        let node3 = TrieNodeODRc::new_in(node3, global_alloc());
+
+        let mut root = LineListNode::<(), _>::new_in(global_alloc());
+        unsafe {
+            root.set_payload_owned::<0>(&[0u8], ValOrChild::Child(a_root));
+            root.set_payload_owned::<1>(&[1u8], ValOrChild::Child(node3));
+        }
+        let root = TrieNodeODRc::new_in(root, global_alloc());
+        let mut map = PathMap::<()>::new_with_root_in(Some(root), None, global_alloc());
+
+        eprintln!("-- hand-built layout:\n{}", dump_layout(&map));
+        eprintln!("-- paths: {:?}", all_paths(&map));
+        let valid = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::trie_node::assert_valid_trie(map.root())));
+        eprintln!("-- assert_valid_trie: {}", if valid.is_ok() { "ok" } else { "PANICKED (invariant violated)" });
+
+        // The cata's ListNode case 7 assumes the invariant (`debug_assert_eq!(key0.len(), 1)`), so
+        // merkleize on this layout is expected to panic in a debug build
+        let merk = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let r = assert_same_paths_and_report("illegal node 4", &mut map);
+            (r.reused, r.before_nodes, r.after_nodes)
+        }));
+        match merk {
+            Ok((reused, before, after)) => eprintln!("-- merkleize survived the illegal node: reused={reused} before={before} after={after}"),
+            Err(_) => eprintln!("-- merkleize PANICKED on the illegal node (cata assumes the ListNode invariant)"),
         }
     }
 }

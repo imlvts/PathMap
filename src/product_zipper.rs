@@ -1663,7 +1663,7 @@ mod tests {
         pz.reset();
         pz.descend_to(&full_path);
         assert!(pz.ascend_until() > 0);
-        assert_eq!(pz.path(), []);
+        assert_eq!(pz.path(), [] as [u8; 0]);
         assert_eq!(pz.path_exists(), true);
         assert_eq!(pz.child_count(), 1);
         assert_eq!(pz.is_val(), false);
@@ -1671,7 +1671,7 @@ mod tests {
         // test ascend_until_branch
         pz.descend_to(&full_path);
         assert!(pz.ascend_until_branch() > 0);
-        assert_eq!(pz.path(), []);
+        assert_eq!(pz.path(), [] as [u8; 0]);
         assert_eq!(pz.path_exists(), true);
         assert_eq!(pz.child_count(), 1);
         assert_eq!(pz.is_val(), false);

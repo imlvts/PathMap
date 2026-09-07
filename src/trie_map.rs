@@ -577,13 +577,18 @@ impl<V: Clone + Send + Sync + Unpin, A: Allocator> PathMap<V, A> {
     }
 
     /// Optimize the `PathMap` by factoring shared subtries using a temporary [Merkle Tree](https://en.wikipedia.org/wiki/Merkle_tree)
+    ///
+    /// Subtries are identified by their logical hash, so [`MerkleizeResult::hash`] equals
+    /// [`CatamorphismCached::hash`](crate::morphisms::CatamorphismCached::hash) for this map
     pub fn merkleize(&mut self) -> MerkleizeResult
         where V: core::hash::Hash
     {
         let Some(root) = self.root() else {
             return MerkleizeResult::default();
         };
-        let (result, new_root) = merkleize_root(root, self.root_val());
+        // The scheme is fixed here on purpose: merkleize merges subtries whose hashes are equal, so a
+        // caller-supplied scheme with collisions would silently merge subtries that differ
+        let (result, new_root) = merkleize_root(root, self.root_val(), &crate::morphisms::trie_hash::GxHashScheme);
         if let Some(new_root) = new_root {
             *self.root.get_mut() = Some(new_root);
         }

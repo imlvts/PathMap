@@ -2410,6 +2410,9 @@ mod tagged_node_ref {
 pub(crate) trait CataCache<V: Clone + Send + Sync, A: Allocator, W> {
     /// Returns `true` when the cache has no interest in `node`, so a node implementation may traverse
     /// it directly instead of through [`recursive_cata_cached`]
+    ///
+    /// `node` may be the empty-node sentinel, which a dangling path's slot holds.  The sentinel is
+    /// not a real allocation, so implementations must not read its refcount.
     fn skips(&self, node: &TrieNodeODRc<V, A>) -> bool;
     /// Returns `true` when the `W` of `node` is looked up in and stored into the cache, keyed by the
     /// node's address.  Must be `false` for the empty node and for every node [`skips`](Self::skips) accepts.
@@ -2424,7 +2427,8 @@ pub(crate) trait CataCache<V: Clone + Send + Sync, A: Allocator, W> {
 impl<V: Clone + Send + Sync, A: Allocator, W: Clone> CataCache<V, A, W> for HashMap<u64, W> {
     #[inline(always)]
     fn skips(&self, node: &TrieNodeODRc<V, A>) -> bool {
-        node.refcount() <= 1
+        // The empty node has nothing to cache; its refcount must not be read (see the trait doc)
+        node.is_empty() || node.refcount() <= 1
     }
     #[inline(always)]
     fn caches(&self, node: &TrieNodeODRc<V, A>) -> bool {
@@ -3161,6 +3165,7 @@ mod opaque_dyn_rc_trie_node {
         }
         #[inline]
         pub(crate) fn refcount(&self) -> usize {
+            debug_assert!(!self.is_empty(), "refcount of the empty-node sentinel, which is not a real allocation");
             let (ptr, _tag) = self.ptr.get_raw_parts();
             unsafe{ &*ptr }.load(Acquire) as usize
         }

@@ -8,6 +8,7 @@
 use pathmap::PathMap;
 use pathmap::arena_compact::ArenaCompactTree;
 use pathmap::zipper::*;
+use differential::FuzzValCount;
 
 const CASES: &[(&str, &str)] = &[
     ("val_count_ignores_focus", "ACTZipper::val_count() counts from the zipper root, not the focus"),
@@ -58,8 +59,8 @@ fn run(name: &str) {
                 println!(
                     "  focus {:8?}: exists={:<5} PathMap val_count={}  ACT val_count={}{}",
                     String::from_utf8_lossy(path), pz.path_exists(),
-                    pz.val_count(), az.val_count(),
-                    if pz.val_count() == az.val_count() { "" } else { "   <-- differs" },
+                    pz.fuzz_val_count(), az.fuzz_val_count(),
+                    if pz.fuzz_val_count() == az.fuzz_val_count() { "" } else { "   <-- differs" },
                 );
             }
         }

@@ -203,3 +203,45 @@ find = """            Self::Identity => match b {
 replace = """            Self::Identity => match b {
                 Self::Element => Self::Identity,
                 Self::Identity => Self::Identity,"""
+
+# --- The logical trie hash (Hash.lean; ops hash / hash_iter / map_hash / merkleize) ------
+# The model computes the hash over the logical trie, so these mutate the algebra and the
+# recursive engine's handling of values and runs, not the FNV primitive.
+
+[[mutant]]
+name = "hash_leaf_value_not_layered"
+file = "src/morphisms.rs"
+find = """                    |value| Ok(scheme.with_value(scheme.value(value), leaf)),"""
+replace = """                    |value| { let _ = value; Ok(leaf) },"""
+
+[[mutant]]
+name = "summarize_run_drops_run_bytes"
+file = "src/morphisms.rs"
+find = """            finalize_f(&mask, Some(acc), if COMPUTE_PATH { run } else { &[] })"""
+replace = """            let _ = run; finalize_f(&mask, Some(acc), &[])"""
+
+[[mutant]]
+name = "collapse_slot_val_ignores_value"
+file = "src/trie_node.rs"
+find = """    let w = recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(node, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?;
+    collapse_f(val, w)"""
+replace = """    let w = recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(node, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?;
+    let _ = val; Ok(w)"""
+
+[[mutant]]
+name = "listnode_case7_drops_deeper_value"
+file = "src/line_list_node.rs"
+find = """                    let child_w = summarize!(Some(val), None, &key1[2..])?;"""
+replace = """                    let _ = val; let child_w = summarize!(None, None, &key1[2..])?;"""
+
+[[mutant]]
+name = "merkleize_hash_drops_root_value"
+file = "src/merkleization.rs"
+find = """        Some(val) => collapse_slot_val::<_, _, _, _, _, _, _, _, _, _, _, true>(root, val, start_f, fold_child_f, map_f, finalize_f, collapse_f, &mut hashes),"""
+replace = """        Some(_val) => recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, _, true>(root, start_f, fold_child_f, map_f, finalize_f, collapse_f, &mut hashes),"""
+
+[[mutant]]
+name = "cata_skips_sentinel_refcount"
+file = "src/trie_node.rs"
+find = """        node.is_empty() || node.refcount() <= 1"""
+replace = """        node.refcount() <= 1"""

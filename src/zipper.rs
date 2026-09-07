@@ -4332,7 +4332,7 @@ pub(crate) mod zipper_moving_tests {
     pub const ZIPPER_BYTES_ITER_TEST3_PATH: &[u8] = &[3, 193, 4, 193, 5, 2, 193];
 
     pub fn zipper_byte_iter_test3<Z: ZipperMoving + ZipperPath>(mut zipper: Z) {
-        assert_eq!(zipper.path(), &[]);
+        assert_eq!(zipper.path(), &[] as &[u8]);
         assert_eq!(zipper.descend_first_byte(), Some(6));
         assert_eq!(zipper.path(), &[6]);
         assert_eq!(zipper.descend_first_byte(), Some(193));
@@ -4986,7 +4986,7 @@ pub(crate) mod zipper_iteration_tests {
         assert_eq!(zipper.path(), &[1]);
         assert_eq!(&observed[..], zipper.path());
         assert_eq!(zipper.to_next_k_path_observed(1, &mut observed), false);
-        assert_eq!(zipper.path(), &[]);
+        assert_eq!(zipper.path(), &[] as &[u8]);
         assert_eq!(&observed[..], zipper.path());
     }
 }

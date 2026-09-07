@@ -14,6 +14,9 @@
 //! `lean/PathMapModel/Fuzz.lean`; any change here must be mirrored there.
 
 use pathmap::PathMap;
+use pathmap::alloc::GlobalAlloc;
+use pathmap::morphisms::{CatamorphismCached, CatamorphismCachedIterative};
+use pathmap::morphisms::trie_hash::Fnv1a64Scheme;
 use pathmap::ring::AlgebraicStatus;
 use pathmap::utils::ByteMask;
 use pathmap::zipper::*;
@@ -25,7 +28,7 @@ use pathmap::zipper::*;
 use core::fmt::Write as _;
 
 /// Number of distinct operations. Must match `PathMapModel.Fuzz.nops`.
-pub const NOPS: usize = 56;
+pub const NOPS: usize = 60;
 /// Maximum operations executed. Must match the `maxSteps` default in `Fuzz.run`.
 pub const MAX_STEPS: usize = 256;
 /// Maximum entries in a `dump`. Must match `Fuzz.dumpAt`.
@@ -110,13 +113,35 @@ pub fn show_byte_opt(b: Option<u8>) -> String {
     }
 }
 
+/// `val_count` for the zippers the harness fingerprints.
+///
+/// `val_count` lives on the cached catamorphism traits, which are implemented for different
+/// zipper flavours through different engines: the `PathMap` zippers through the recursive
+/// engine (`CatamorphismCached`), `ACTZipper` through the zipper-driven one
+/// (`CatamorphismCachedIterative`).  This trait picks the right one per type so the
+/// fingerprint can stay generic.
+pub trait FuzzValCount {
+    fn fuzz_val_count(&self) -> usize;
+}
+impl FuzzValCount for WriteZipperUntracked<'_, '_, u64> {
+    fn fuzz_val_count(&self) -> usize { CatamorphismCached::<u64, GlobalAlloc>::val_count(self) }
+}
+impl FuzzValCount for ReadZipperUntracked<'_, '_, u64> {
+    fn fuzz_val_count(&self) -> usize { CatamorphismCached::<u64, GlobalAlloc>::val_count(self) }
+}
+
+/// Render a 64-bit hash the way the model does: 16 lowercase hex digits.
+pub fn show_hash(h: u128) -> String {
+    format!("{:016x}", h as u64)
+}
+
 /// Per-step fingerprint of a zipper.
 ///
 /// `expected_root` is the root the zipper was created at.  A zipper must never
 /// leave it, so a mismatch is tagged `ESCAPED-ROOT` — the model can never
 /// produce that tag, which lets `differential.py` recognise the escape bug
 /// instead of reporting it as an unexplained state divergence.
-pub fn fingerprint<Z: ZipperMoving + ZipperPath + ZipperValues<u64> + ZipperAbsolutePath>(
+pub fn fingerprint<Z: ZipperMoving + ZipperPath + ZipperValues<u64> + ZipperAbsolutePath + FuzzValCount>(
     z: &Z,
     expected_root: &[u8],
 ) -> String {
@@ -128,7 +153,7 @@ pub fn fingerprint<Z: ZipperMoving + ZipperPath + ZipperValues<u64> + ZipperAbso
         show_bool(z.path_exists()),
         show_val(z.val()),
         z.child_count(),
-        z.val_count(),
+        z.fuzz_val_count(),
         // `focus_byte` is unspecified at the root, so it is only compared below it.
         if z.at_root() { "?".to_string() } else { show_byte_opt(z.focus_byte()) }
     )
@@ -175,10 +200,16 @@ pub fn dump<Z: ZipperMoving + ZipperPath + ZipperValues<u64>>(z: &mut Z) -> Stri
 /// Keeping this behind a trait means there is still exactly one operation table,
 /// so the two front ends cannot drift apart.
 pub trait ReadSource:
-    Zipper + ZipperMoving + ZipperPath + ZipperValues<u64> + ZipperAbsolutePath + ZipperIteration
+    Zipper + ZipperMoving + ZipperPath + ZipperValues<u64> + ZipperAbsolutePath + ZipperIteration + FuzzValCount
 {
     /// Depth-first dump of everything below the focus (`fork_read_zipper` + walk).
     fn dump_fork(&self) -> String;
+    /// `CatamorphismCached::hash_with_scheme(Fnv1a64Scheme)` at the focus through the recursive
+    /// engine, or `None` if the read source has no concrete subtries to recurse over.
+    fn hash_probe(&self) -> Option<u128> { None }
+    /// The same hash through the zipper-driven engine (`CatamorphismCachedIterative`), or `None`
+    /// if the read source cannot drive it.
+    fn hash_iter_probe(&self) -> Option<u128> { None }
     /// `make_map().val_count()`, or `None` if subtries cannot be materialised.
     fn make_map_val_count(&self) -> Option<usize>;
 
@@ -212,6 +243,12 @@ pub trait ReadSource:
 impl<'a, 'p> ReadSource for ReadZipperUntracked<'a, 'p, u64> {
     fn dump_fork(&self) -> String {
         dump(&mut self.fork_read_zipper())
+    }
+    fn hash_probe(&self) -> Option<u128> {
+        Some(CatamorphismCached::<u64, GlobalAlloc>::hash_with_scheme(self, &Fnv1a64Scheme))
+    }
+    fn hash_iter_probe(&self) -> Option<u128> {
+        Some(CatamorphismCachedIterative::<u64>::hash_with_scheme(self, &Fnv1a64Scheme))
     }
     fn make_map_val_count(&self) -> Option<usize> {
         Some(self.make_map().val_count())
@@ -300,7 +337,7 @@ macro_rules! tgt {
 /// trait documentation or forced by the meaning of the accessors.
 pub fn check_zipper<Z>(z: &Z, label: &str, expected_root: &[u8])
 where
-    Z: ZipperMoving + ZipperPath + ZipperValues<u64> + ZipperAbsolutePath,
+    Z: ZipperMoving + ZipperPath + ZipperValues<u64> + ZipperAbsolutePath + FuzzValCount,
 {
     // `at_root` is defined as "the path back to the root is empty".
     assert_eq!(
@@ -347,12 +384,12 @@ where
     }
     // `val_count` counts the focus itself.
     if z.is_val() {
-        assert!(z.val_count() >= 1, "{label}: val_count omits the focus value");
+        assert!(z.fuzz_val_count() >= 1, "{label}: val_count omits the focus value");
     }
     // Nothing below means nothing to count except the focus.
     if z.child_count() == 0 {
         assert_eq!(
-            z.val_count(),
+            z.fuzz_val_count(),
             z.is_val() as usize,
             "{label}: val_count on a leaf"
         );
@@ -904,6 +941,58 @@ pub fn run_ops<R: ReadSource>(
                 55 => {
                     let p = get!(d.path(6));
                     ("meet_2", show_status_opt((*rz).do_meet_2(&mut wz, &p)))
+                }
+                56 => {
+                    // The logical trie hash at the focus, through the recursive cata engine.  The
+                    // model computes the same function over the logical trie, so this pins down
+                    // that the hash is independent of node layout, and that a value at the focus,
+                    // in a run, or in a parent's slot is layered on in the same place.
+                    let t = get!(d.modn(2));
+                    let h = if t == 0 {
+                        Some(CatamorphismCached::<u64, GlobalAlloc>::hash_with_scheme(&wz, &Fnv1a64Scheme))
+                    } else {
+                        (*rz).hash_probe()
+                    };
+                    ("hash", h.map(show_hash).unwrap_or_else(|| "skip".to_string()))
+                }
+                57 => {
+                    // The same hash of the read zipper through the zipper-driven engine.  The
+                    // model emits the same value as for `hash`, so the two engines are held to
+                    // agree with the model and hence with each other.
+                    ("hash_iter", (*rz).hash_iter_probe().map(show_hash).unwrap_or_else(|| "skip".to_string()))
+                }
+                58 => {
+                    // The hash of the whole write map from its root, including the root value.
+                    // The write zipper borrows the map, so it is read through a zipper at the map
+                    // root: `PathMap::hash` and a root zipper's hash are specified to agree.
+                    let mut z = wz.fork_read_zipper();
+                    z.reset();
+                    // `fork_read_zipper` is rooted at the write zipper's focus, so this only sees
+                    // the subtrie below `root0 ++ path`; to hash the map from its root the write
+                    // zipper has to be released.
+                    drop(z);
+                    let path = wz.path().to_vec();
+                    drop(wz);
+                    let h = CatamorphismCached::<u64, GlobalAlloc>::hash_with_scheme(&*map0, &Fnv1a64Scheme);
+                    wz = map0.write_zipper_at_path(root0);
+                    wz.descend_to(&path);
+                    ("map_hash", show_hash(h))
+                }
+                59 => {
+                    // Merkleize the write map.  Merkleize always uses the production (gxhash)
+                    // scheme, which the model cannot compute, so what is reported is whether the
+                    // hash it returns equals the map's hash under that same scheme -- the model
+                    // says it always does.  Merkleize is the identity on the logical trie, so the
+                    // model does nothing else: the fingerprints, the final dump and a later
+                    // `map_hash` hold it to changing no path, value or hash.  The write zipper
+                    // borrows the map, so it is re-created at the same logical position.
+                    let path = wz.path().to_vec();
+                    drop(wz);
+                    let r = map0.merkleize();
+                    let h = CatamorphismCached::<u64, GlobalAlloc>::hash(&*map0);
+                    wz = map0.write_zipper_at_path(root0);
+                    wz.descend_to(&path);
+                    ("merkleize", show_bool(r.hash == h).to_string())
                 }
                 47 => {
                     let t = get!(d.modn(2));

@@ -1,4 +1,5 @@
 import PathMapModel.Spec
+import PathMapModel.Hash
 
 /-!
 # Build-time checks
@@ -207,6 +208,44 @@ real `prestrict` bug: a location that both carries a value and branches. -/
          [([0], 0), ([0,1,2], 1), ([0,1,3], 2)],
          [([0], 0), ([0,1], 1), ([0,1,2], 2), ([0,1,3], 3), ([9,9], 4)] ].all
   (fun es => restrictSelf ops (mk es))
+
+/-! ## The logical hash
+
+`Hash.hashU64` is the model of the crate's `Fnv1a64Scheme` trie hash.  These pin the definition
+to the algebra the crate implements in `CatamorphismCached::hash_with_scheme`: a run steps one
+byte at a time, a leaf value sits on the empty node, a value with children is layered on the
+hash of the node below it, and the hash at a position sees nothing above it. -/
+
+-- The empty trie is the empty node.
+#guard Hash.hashU64 fEmpty [] == Hash.leaf
+
+-- A dangling position hashes as the empty node, exactly like the empty trie.
+#guard Hash.hashU64 (PathMap.empty.addPath [0,1]) [0,1] == Hash.leaf
+
+-- A single run: one `step` per byte above a leaf value.
+#guard Hash.hashU64 fRun [] ==
+  Hash.step 0 (Hash.step 0 (Hash.step 0 (Hash.step 0 (Hash.withValue (Hash.value 7) Hash.leaf))))
+
+-- The hash at a position is the hash of the subtrie below it, independent of what is above.
+#guard Hash.hashU64 fRun [0,0] == Hash.step 0 (Hash.step 0 (Hash.withValue (Hash.value 7) Hash.leaf))
+
+-- A value with children: layered on the node below, whose children fold in ascending order.
+#guard Hash.hashU64 fBranch [0] ==
+  Hash.withValue (Hash.value 1)
+    (Hash.node [0, 1] [Hash.withValue (Hash.value 2) Hash.leaf, Hash.withValue (Hash.value 3) Hash.leaf])
+
+-- The root value is layered on like any other.
+#guard Hash.hashU64 fBranch [] ==
+  Hash.withValue (Hash.value 0) (Hash.node [0, 1] [Hash.hashU64 fBranch [0], Hash.withValue (Hash.value 4) Hash.leaf])
+
+-- Different values, and a value present or absent at an interior position, change the hash.
+#guard Hash.hashU64 (mk [([0,0], 1)]) [] != Hash.hashU64 (mk [([0,0], 2)]) []
+#guard Hash.hashU64 (mk [([0,0], 1)]) [] != Hash.hashU64 (mk [([0], 1), ([0,0], 1)]) []
+#guard Hash.hashU64 (mk [([0,0], 1)]) [] != Hash.hashU64 (PathMap.empty.addPath [0,0]) []
+
+-- Rendering matches `format!("{:016x}")`.
+#guard Hash.hex64 0 == "0000000000000000"
+#guard Hash.hex64 0xcbf29ce484222325 == "cbf29ce484222325"
 
 end Check
 end PathMapModel

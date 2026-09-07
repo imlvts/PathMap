@@ -66,7 +66,6 @@
 //! However, the `side_effect` methods are useful in the implementation of things like serialization, etc.
 //!
 use core::convert::Infallible;
-use std::hash::Hasher;
 use reusing_vec::ReusingQueue;
 
 use crate::utils::*;
@@ -77,7 +76,7 @@ use crate::trie_node::recursive_cata_root;
 use crate::zipper;
 use crate::zipper::*;
 
-use crate::gxhash::{self, HashMap, HashMapExt};
+use crate::gxhash::{HashMap, HashMapExt};
 
 /// Provides methods to perform side-effecting catamorphisms appropriate for serialization and full-path operations
 pub trait CatamorphismSideEffecting<V> {
@@ -155,7 +154,7 @@ macro_rules! define_cached_cata_trait {
                 V: std::hash::Hash,
                 Self: Sized,
             {
-                self.hash_with(trie_hash::value_hash)
+                self.hash_with_scheme(&trie_hash::GxHashScheme)
             }
 
             /// Hashes the logical trie using the provided function to hash values.
@@ -167,16 +166,27 @@ macro_rules! define_cached_cata_trait {
                 F: Fn(&V) -> u128,
                 Self: Sized,
             {
-                use trie_hash::node_hasher;
-                let val_hash = &val_hash;
-                let with_value = |value: &V, below: u128| trie_hash::with_value(val_hash(value), below);
-                let leaf = trie_hash::leaf();
-                self.factored_cata::<gxhash::GxHasher, u128, Infallible, _, _, _, _, _>(
-                    |bm| Ok(node_hasher(bm)),
-                    |_bm, child, hasher| { hasher.write_u128(child); Ok(()) },
-                    |value| Ok(with_value(value, leaf)),
-                    |bm, hasher| Ok(hasher.unwrap_or_else(|| node_hasher(bm)).finish_u128()),
-                    |value, below| Ok(with_value(value, below)),
+                self.hash_with_scheme(&trie_hash::GxHashWith(val_hash))
+            }
+
+            /// Hashes the logical trie with an explicit [`HashScheme`](trie_hash::HashScheme)
+            ///
+            /// The result depends only on the paths and values in the trie, never on how they are laid
+            /// out in nodes: every byte of a path is hashed as a logical node with one child, a branch
+            /// point hashes its child mask and its children in ascending byte order, and a value is
+            /// layered on top of the hash of the subtrie below it.  See [`trie_hash`] for the scheme.
+            fn hash_with_scheme<S>(&self, scheme: &S) -> u128
+            where
+                S: trie_hash::HashScheme<V>,
+                Self: Sized,
+            {
+                let leaf = scheme.leaf();
+                self.factored_cata::<S::Acc, u128, Infallible, _, _, _, _, _>(
+                    |bm| Ok(scheme.start(bm)),
+                    |_bm, child, acc| { scheme.child(acc, child); Ok(()) },
+                    |value| Ok(scheme.with_value(scheme.value(value), leaf)),
+                    |bm, acc| Ok(scheme.finish(acc.unwrap_or_else(|| scheme.start(bm)))),
+                    |value, below| Ok(scheme.with_value(scheme.value(value), below)),
                 ).unwrap_or_else(|never| match never {})
             }
 
@@ -324,19 +334,58 @@ macro_rules! define_cached_cata_trait {
     };
 }
 
-/// The hashing scheme of [`CatamorphismCached::hash_with`], shared with merkleization so that a
-/// merkleized trie's hash is the trie's cata hash
-pub(crate) mod trie_hash {
-    use core::hash::Hasher;
+/// The hashing scheme behind [`CatamorphismCached::hash`](CatamorphismCached::hash) and merkleization
+///
+/// A hash is defined over the **logical** trie, so it is the same for every physical layout of the
+/// same paths and values.  For a position `p` in the trie:
+///
+/// * `below(p)` = `finish(start(mask) ∘ child(h(p ++ [b])) for b in mask ascending)`, where `mask` is
+///   the set of bytes with a child below `p`.  A byte inside a non-branching run is a mask with one
+///   bit; an endpoint with no children is the empty mask, whose hash is [`leaf`](HashScheme::leaf).
+/// * `h(p)` = `with_value(value(v), below(p))` when `p` holds the value `v`, otherwise `below(p)`.
+///
+/// [`GxHashScheme`] is the production scheme.  [`Fnv1a64Scheme`] exists for the differential fuzzing
+/// harness, whose Lean oracle (`lean/PathMapModel/Hash.lean`) computes the same function from the
+/// model of the logical trie.
+pub mod trie_hash {
+    use core::hash::{Hash, Hasher};
     use core::ptr::slice_from_raw_parts;
     use crate::gxhash;
     use crate::utils::ByteMask;
+
+    /// The primitive operations a logical trie hash is built from.  See the [module docs](self)
+    pub trait HashScheme<V> {
+        /// The running state of a logical node's hash while its children are folded in
+        type Acc;
+        /// Begins a logical node's hash from its child mask
+        fn start(&self, mask: &ByteMask) -> Self::Acc;
+        /// Folds one child's hash into a logical node.  Called in ascending byte order
+        fn child(&self, acc: &mut Self::Acc, child: u128);
+        /// Completes a logical node's hash
+        fn finish(&self, acc: Self::Acc) -> u128;
+        /// Hashes a value on its own
+        fn value(&self, v: &V) -> u128;
+        /// Places a value's hash on top of the hash of the subtrie below it
+        fn with_value(&self, val_hash: u128, below: u128) -> u128;
+        /// The hash of a position with no children and no value
+        #[inline]
+        fn leaf(&self) -> u128 {
+            self.finish(self.start(&ByteMask::EMPTY))
+        }
+        /// The hash of one byte of a non-branching run above `below`: a node with a single child
+        #[inline]
+        fn step(&self, byte: u8, below: u128) -> u128 {
+            let mut acc = self.start(&ByteMask::from(byte));
+            self.child(&mut acc, below);
+            self.finish(acc)
+        }
+    }
 
     const SEED: i64 = 0b0100001010101101111110010110100110000010011000100100100111110111i64;
 
     /// Hashes a value on its own, with the default seed
     #[inline(always)]
-    pub(crate) fn value_hash<V: core::hash::Hash>(v: &V) -> u128 {
+    pub(crate) fn value_hash<V: Hash>(v: &V) -> u128 {
         let mut hasher = gxhash::GxHasher::with_seed(0);
         v.hash(&mut hasher);
         hasher.finish_u128()
@@ -356,17 +405,118 @@ pub(crate) mod trie_hash {
         hasher.write_u128(val_hash);
         hasher.finish_u128()
     }
-    /// The hash of the empty node a leaf value sits on
-    #[inline(always)]
-    pub(crate) fn leaf() -> u128 {
-        node_hasher(&ByteMask::EMPTY).finish_u128()
+
+    /// The production scheme: gxhash over the mask bytes and the children's hashes, values hashed
+    /// through [`Hash`] with seed 0
+    #[derive(Clone, Copy, Default, Debug)]
+    pub struct GxHashScheme;
+
+    impl<V: Hash> HashScheme<V> for GxHashScheme {
+        type Acc = gxhash::GxHasher;
+        #[inline(always)]
+        fn start(&self, mask: &ByteMask) -> Self::Acc { node_hasher(mask) }
+        #[inline(always)]
+        fn child(&self, acc: &mut Self::Acc, child: u128) { acc.write_u128(child) }
+        #[inline(always)]
+        fn finish(&self, acc: Self::Acc) -> u128 { acc.finish_u128() }
+        #[inline(always)]
+        fn value(&self, v: &V) -> u128 { value_hash(v) }
+        #[inline(always)]
+        fn with_value(&self, val_hash: u128, below: u128) -> u128 { with_value(val_hash, below) }
     }
-    /// Hashes one byte of a non-branching run above `below`, as a node with a single child
-    #[inline(always)]
-    pub(crate) fn step(byte: u8, below: u128) -> u128 {
-        let mut hasher = node_hasher(&ByteMask::from(byte));
-        hasher.write_u128(below);
-        hasher.finish_u128()
+
+    /// [`GxHashScheme`] with a caller-supplied value hash, for
+    /// [`CatamorphismCached::hash_with`](super::CatamorphismCached::hash_with)
+    #[derive(Clone, Copy)]
+    pub struct GxHashWith<F>(pub F);
+
+    impl<V, F: Fn(&V) -> u128> HashScheme<V> for GxHashWith<F> {
+        type Acc = gxhash::GxHasher;
+        #[inline(always)]
+        fn start(&self, mask: &ByteMask) -> Self::Acc { node_hasher(mask) }
+        #[inline(always)]
+        fn child(&self, acc: &mut Self::Acc, child: u128) { acc.write_u128(child) }
+        #[inline(always)]
+        fn finish(&self, acc: Self::Acc) -> u128 { acc.finish_u128() }
+        #[inline(always)]
+        fn value(&self, v: &V) -> u128 { (self.0)(v) }
+        #[inline(always)]
+        fn with_value(&self, val_hash: u128, below: u128) -> u128 { with_value(val_hash, below) }
+    }
+
+    /// A 64-bit FNV-1a state.  Integers are absorbed little-endian regardless of the platform, so a
+    /// trace is comparable across machines
+    #[derive(Clone, Copy, Debug)]
+    pub struct Fnv1a64(pub u64);
+
+    impl Fnv1a64 {
+        pub const OFFSET: u64 = 0xcbf29ce484222325;
+        pub const PRIME: u64 = 0x100000001b3;
+        #[inline]
+        pub fn new() -> Self { Self(Self::OFFSET) }
+    }
+    impl Default for Fnv1a64 {
+        fn default() -> Self { Self::new() }
+    }
+    impl Hasher for Fnv1a64 {
+        #[inline]
+        fn finish(&self) -> u64 { self.0 }
+        #[inline]
+        fn write(&mut self, bytes: &[u8]) {
+            for b in bytes {
+                self.0 = (self.0 ^ (*b as u64)).wrapping_mul(Self::PRIME);
+            }
+        }
+        #[inline] fn write_u16(&mut self, i: u16) { self.write(&i.to_le_bytes()) }
+        #[inline] fn write_u32(&mut self, i: u32) { self.write(&i.to_le_bytes()) }
+        #[inline] fn write_u64(&mut self, i: u64) { self.write(&i.to_le_bytes()) }
+        #[inline] fn write_u128(&mut self, i: u128) { self.write(&i.to_le_bytes()) }
+        #[inline] fn write_usize(&mut self, i: usize) { self.write(&(i as u64).to_le_bytes()) }
+    }
+
+    /// A scheme built on 64-bit FNV-1a, simple enough to be re-implemented in a few lines elsewhere.
+    /// Not for production use: it exists so an independent model can compute the same hash and check
+    /// that the trie hash is a function of the logical trie alone.
+    ///
+    /// * `value(v)` = FNV-1a over what `v.hash()` writes (integers little-endian)
+    /// * `start(mask)` = FNV-1a over `b'N'` then the 32 bytes of the mask as a little-endian 256-bit
+    ///   bitmap (byte `i` holds bits `8i..8i+8`); `child(h)` absorbs the low 64 bits of `h`
+    ///   little-endian; `finish` is the state
+    /// * `with_value(vh, below)` = FNV-1a over `b'V'`, the low 64 bits of `below`, then of `vh`
+    ///
+    /// Every hash this scheme produces fits in 64 bits.
+    #[derive(Clone, Copy, Default, Debug)]
+    pub struct Fnv1a64Scheme;
+
+    impl<V: Hash> HashScheme<V> for Fnv1a64Scheme {
+        type Acc = Fnv1a64;
+        #[inline]
+        fn start(&self, mask: &ByteMask) -> Self::Acc {
+            let mut h = Fnv1a64::new();
+            h.write(b"N");
+            for word in mask.0 {
+                h.write(&word.to_le_bytes());
+            }
+            h
+        }
+        #[inline]
+        fn child(&self, acc: &mut Self::Acc, child: u128) { acc.write_u64(child as u64) }
+        #[inline]
+        fn finish(&self, acc: Self::Acc) -> u128 { acc.0 as u128 }
+        #[inline]
+        fn value(&self, v: &V) -> u128 {
+            let mut h = Fnv1a64::new();
+            v.hash(&mut h);
+            h.0 as u128
+        }
+        #[inline]
+        fn with_value(&self, val_hash: u128, below: u128) -> u128 {
+            let mut h = Fnv1a64::new();
+            h.write(b"V");
+            h.write_u64(below as u64);
+            h.write_u64(val_hash as u64);
+            h.0 as u128
+        }
     }
 }
 
@@ -3110,13 +3260,13 @@ mod tests {
                 // println!("collapse: {path:?}");
                 match *v {
                     1 => assert_eq!(path, &[97, 98]),
-                    0 => assert_eq!(path, &[]),
+                    0 => assert_eq!(path, &[] as &[u8]),
                     _ => unreachable!(),
                 }
             },
             |_mask, _, path| {
                 // println!("alg: {path:?}");
-                assert_eq!(path, &[]);
+                assert_eq!(path, &[] as &[u8]);
             },
             |prefix, _, path| {
                 // println!("jump: over {prefix:?} to {path:?}");
@@ -3549,6 +3699,38 @@ mod tests {
 
     /// The `W` cached for a shared node must not depend on the value stored in the parent's slot
     /// for that node, so a subtrie reached through a valued slot and an unvalued slot is summarized once.
+    /// A dangling path is a child slot holding the empty-node sentinel, whose "pointer" is not a
+    /// real address.  The recursive cached cata must never read the sentinel's refcount when it
+    /// decides whether a child needs the cache.  Found by the differential fuzzer: on a two-slot
+    /// node with 1-byte keys whose second child dangles, `hash` and `val_count` read through the
+    /// sentinel (a segfault in release).
+    #[test]
+    fn recursive_cata_dangling_child_in_two_child_node() {
+        let mut map = PathMap::<()>::new();
+        map.insert(&[0u8, 0][..], ());
+        map.insert(&[0u8, 1][..], ());
+        map.create_path(&[1u8]);
+        assert_eq!(CatamorphismCached::val_count(&map), 2);
+        assert_eq!(CatamorphismCached::hash(&map), CatamorphismCachedIterative::hash(&map));
+        // and with the dangling child first
+        let mut map = PathMap::<()>::new();
+        map.insert(&[1u8, 0][..], ());
+        map.insert(&[1u8, 1][..], ());
+        map.create_path(&[0u8]);
+        assert_eq!(CatamorphismCached::val_count(&map), 2);
+        assert_eq!(CatamorphismCached::hash(&map), CatamorphismCachedIterative::hash(&map));
+        // a dangling path under a value-bearing slot
+        let mut map = PathMap::<u64>::new();
+        map.insert(&[0u8][..], 1);
+        map.insert(&[0u8, 0][..], 2);
+        map.insert(&[0u8, 1][..], 3);
+        map.create_path(&[1u8]);
+        assert_eq!(CatamorphismCached::val_count(&map), 3);
+        assert_eq!(CatamorphismCached::hash(&map), CatamorphismCachedIterative::hash(&map));
+        let mut merk = map.clone();
+        assert_eq!(merk.merkleize().hash, CatamorphismCached::hash(&map));
+    }
+
     #[test]
     fn recursive_cata_reuses_shared_node_under_valued_slot() {
         use core::sync::atomic::{AtomicUsize, Ordering::Relaxed};

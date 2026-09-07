@@ -152,6 +152,7 @@ focus, such that ..." — instead of as a node walk.
 | `PathMapModel/Write.lean` | the write API: `ZipperWriting` in full |
 | `PathMapModel/Map.lean` | the `PathMap` surface, which is the zipper API applied at the root — plus `PathMap::restrict`, the one genuinely map-level operation |
 | `PathMapModel/Spec.lean` | §1 proved laws (the cursor algebra); §2 checkable laws (metamorphic properties) |
+| `PathMapModel/Hash.lean` | the logical trie hash (`CatamorphismCached::hash` under `Fnv1a64Scheme`), defined over the flat representation so node layout cannot enter |
 | `PathMapModel/Check.lean` | `#guard`s: regression fixtures transcribed from `src/write_zipper.rs`'s own tests, and the §2 laws over a battery of tries |
 | `PathMapModel/Fuzz.lean` | the wire format, the operation table, and the trace producer (including `--act` mode) |
 | `Main.lean` | the `pathmap-oracle` binary |
@@ -577,6 +578,37 @@ cargo run -p differential --bin sharing_check
 
 Both hold wherever they run (266/266 and 214/214, 1464 node references reused)
 and both abort on tries containing a *shared dangling path* — see finding 16.
+
+## The logical hash
+
+`CatamorphismCached::hash` (and the subtrie identity behind `PathMap::merkleize`)
+is a Merkle tree over the **logical** trie: every byte of a path is a node with
+one child, a branch point hashes its child mask and its children in ascending
+byte order, and a value is layered on the hash of the subtrie below it.  Nothing
+about the physical nodes enters, so two layouts of the same paths and values
+must hash alike.
+
+`PathMapModel/Hash.lean` is that definition over the model's `PathMap`, which
+has no node layout to leak.  The production primitive is gxhash, which is not
+worth transcribing; instead the crate exposes the primitive as a
+`pathmap::morphisms::trie_hash::HashScheme`, and the harness runs the crate with
+`Fnv1a64Scheme`, whose primitives are the few lines of FNV-1a the Lean file
+mirrors.  `merkleize` itself is fixed to gxhash (a caller-supplied scheme with
+collisions would merge subtries that differ), so its op reports whether the hash
+it returns equals the map's hash under that scheme, which the model says is
+always `1`.
+
+Four ops exercise it: `hash` (target zipper's focus, recursive engine),
+`hash_iter` (read zipper, zipper-driven engine, also on an ACT source),
+`map_hash` (the write map from its root), and `merkleize` (the write map; the
+model treats it as the identity, so the fingerprints and the final dump hold it
+to changing nothing).  `Check.lean` pins the definition with `#guard`s, and
+`mutants.toml` carries mutants for the algebra and the engine's value and run
+handling.
+
+The first run found a memory-safety bug (FINDINGS.md #17): the recursive cached
+cata read the refcount of the empty-node sentinel when a two-slot node had a
+dangling child, a segfault in release.
 
 ## Structural invariants
 

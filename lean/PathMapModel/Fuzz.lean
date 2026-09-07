@@ -1,4 +1,5 @@
 import PathMapModel.Spec
+import PathMapModel.Hash
 
 /-!
 # Differential-fuzzing front end
@@ -23,7 +24,7 @@ header:
   r0        := u8 % 4 ; r0 × pathbyte    -- write zipper root
   r1        := u8 % 4 ; r1 × pathbyte    -- read  zipper root
 body:
-  repeated: op := u8 % 56 ; operands per op (see `Op.decode`)
+  repeated: op := u8 % 60 ; operands per op (see `step`)
 ```
 
 Every **path byte** is masked to `b % 4`, so the generated tries share prefixes
@@ -192,7 +193,7 @@ a following `u8 % 2` byte (`0` = write zipper, `1` = read zipper); ops `27`–`4
 are write-zipper operations. -/
 
 /-- Number of distinct operations.  Must match `NOPS` in `differential/src/harness.rs`. -/
-def nops : Nat := 56
+def nops : Nat := 60
 
 /-- A full `k`-path iteration: `descend_first_k_path` followed by
 `to_next_k_path` until it runs out (capped at 32 stops).  Returns the locations
@@ -331,6 +332,21 @@ def step (s : St) (d : Dec) : Option (St × Dec) := do
   | 26 => do let (t, d) ← d.mod 2
              let z := getTarget s t
              some (emit s "dump" (dumpAt z.trie z.focus), d)
+  -- Hashing (see `Hash.lean`).  The crate hashes with `Fnv1a64Scheme` for these ops; the model
+  -- computes the same function over the logical trie, which knows nothing about node layout.
+  | 56 => do let (t, d) ← d.mod 2
+             -- The recursive engine needs concrete nodes, which an ACT read source has none of
+             if s.act && t == 1 then some (emit s "hash" "skip", d)
+             else
+               let z := getTarget s t
+               some (emit s "hash" (Hash.hex64 (Hash.hashU64 z.trie z.focus)), d)
+  | 57 => -- The zipper-driven engine on the read zipper; ACT drives it too
+          some (emit s "hash_iter" (Hash.hex64 (Hash.hashU64 s.rz.trie s.rz.focus)), d)
+  | 58 => -- The whole write map from its root, root value included
+          some (emit s "map_hash" (Hash.hex64 (Hash.hashU64 s.wz.trie [])), d)
+  | 59 => -- `merkleize` is the identity on the logical trie, and the hash it reports is the
+          -- map's hash under the production scheme, which the crate checks and reports as `1`
+          some (emit s "merkleize" "1", d)
   | 27 => do let (v, d) ← d.u8
              let (old, z) := s.wz.setVal (UInt64.ofNat v.toNat)
              some (emit { s with wz := z } "set_val" (showVal old), d)

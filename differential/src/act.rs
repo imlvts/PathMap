@@ -9,7 +9,18 @@ use pathmap::zipper::*;
 
 use crate::harness::*;
 
+impl<'t, S: AsRef<[u8]>> FuzzValCount for ACTZipper<'t, S, u64> {
+    fn fuzz_val_count(&self) -> usize {
+        pathmap::morphisms::CatamorphismCachedIterative::<u64>::val_count(self)
+    }
+}
+
 impl<'t, S: AsRef<[u8]>> ReadSource for ACTZipper<'t, S, u64> {
+    /// ACT has no concrete subtries for the recursive engine, but it drives the zipper-based one.
+    fn hash_iter_probe(&self) -> Option<u128> {
+        Some(pathmap::morphisms::CatamorphismCachedIterative::<u64>::hash_with_scheme(
+            self, &pathmap::morphisms::trie_hash::Fnv1a64Scheme))
+    }
     fn dump_fork(&self) -> String {
         dump(&mut self.fork_read_zipper())
     }
