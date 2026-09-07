@@ -9,7 +9,6 @@ use crate::utils::ByteMask;
 
 use crate::utils::BitMask;
 use crate::trie_node::*;
-use crate::gxhash::HashMap;
 use crate::line_list_node::LineListNode;
 use crate::morphisms::summarize_run;
 
@@ -388,7 +387,7 @@ impl<V: Clone + Send + Sync, A: Allocator, Cf: CoFree<V=V, A=A>> ByteNode<Cf, A>
     }
 
     #[inline(never)]
-    pub(crate) fn node_recursive_cata<Acc, W, Err, StartF, FoldChildF, MapF, FinalizeF, CollapseF, const COMPUTE_PATH: bool>(&self, start_f: StartF, fold_child_f: FoldChildF, map_f: MapF, finalize_f: FinalizeF, collapse_f: CollapseF, cache: &mut HashMap<u64, W>) -> Result<W, Err>
+    pub(crate) fn node_recursive_cata<Acc, W, Err, StartF, FoldChildF, MapF, FinalizeF, CollapseF, C, const COMPUTE_PATH: bool>(&self, start_f: StartF, fold_child_f: FoldChildF, map_f: MapF, finalize_f: FinalizeF, collapse_f: CollapseF, cache: &mut C) -> Result<W, Err>
     where
         W: Clone,
         StartF: Copy + Fn(&ByteMask) -> Result<Acc, Err>,
@@ -396,6 +395,7 @@ impl<V: Clone + Send + Sync, A: Allocator, Cf: CoFree<V=V, A=A>> ByteNode<Cf, A>
         MapF: Copy + Fn(&V, &[u8]) -> Result<W, Err>,
     FinalizeF: Copy + Fn(&ByteMask, Option<Acc>, &[u8]) -> Result<W, Err>,
         CollapseF: Copy + Fn(&V, W) -> Result<W, Err>,
+        C: CataCache<V, A, W>,
     {
         let mask = &self.mask;
         let mut ws = start_f(mask)?;
@@ -411,11 +411,11 @@ impl<V: Clone + Send + Sync, A: Allocator, Cf: CoFree<V=V, A=A>> ByteNode<Cf, A>
             // like this gives the optimizer a site to specialize for each permutation
             match (cf.rec(), cf.val()) {
                 (Some(rec), Some(val)) => {
-                    let w = collapse_slot_val::<_, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(rec, val, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?;
+                    let w = collapse_slot_val::<_, _, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(rec, val, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?;
                     fold_child_f(mask, w, &mut ws)?;
                 },
                 (Some(rec), None) => {
-                    let w = recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(rec, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?;
+                    let w = recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(rec, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?;
                     fold_child_f(mask, summarize_run::<_, _, _, _, _, _, _, _, COMPUTE_PATH>(None, Some(w), path, start_f, fold_child_f, map_f, finalize_f)?, &mut ws)?;
                 },
                 (None, Some(val)) => {

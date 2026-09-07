@@ -14,7 +14,6 @@ use fast_slice_utils::{find_prefix_overlap, starts_with};
 use crate::utils::ByteMask;
 use crate::alloc::Allocator;
 use crate::trie_node::*;
-use crate::gxhash::HashMap;
 use crate::ring::*;
 
 /// A borrowed reference to a payload with a key stored elsewhere, contained in 16 Bytes
@@ -122,7 +121,7 @@ impl<'a, V: Clone + Send + Sync, A: Allocator> TinyRefNode<'a, V, A> {
         unsafe{ core::slice::from_raw_parts(self.key_bytes.as_ptr().cast(), self.key_len()) }
     }
 
-    pub(crate) fn node_recursive_cata<Acc, W, Err, StartF, FoldChildF, MapF, FinalizeF, CollapseF, const COMPUTE_PATH: bool>(&self, start_f: StartF, fold_child_f: FoldChildF, map_f: MapF, finalize_f: FinalizeF, collapse_f: CollapseF, cache: &mut HashMap<u64, W>) -> Result<W, Err>
+    pub(crate) fn node_recursive_cata<Acc, W, Err, StartF, FoldChildF, MapF, FinalizeF, CollapseF, C, const COMPUTE_PATH: bool>(&self, start_f: StartF, fold_child_f: FoldChildF, map_f: MapF, finalize_f: FinalizeF, collapse_f: CollapseF, cache: &mut C) -> Result<W, Err>
     where
         W: Clone,
         StartF: Copy + Fn(&ByteMask) -> Result<Acc, Err>,
@@ -130,8 +129,9 @@ impl<'a, V: Clone + Send + Sync, A: Allocator> TinyRefNode<'a, V, A> {
         MapF: Copy + Fn(&V, &[u8]) -> Result<W, Err>,
     FinalizeF: Copy + Fn(&ByteMask, Option<Acc>, &[u8]) -> Result<W, Err>,
         CollapseF: Copy + Fn(&V, W) -> Result<W, Err>,
+        C: CataCache<V, A, W>,
     {
-        self.into_full().unwrap().node_recursive_cata::<_, _, _, _, _, _, _, _, COMPUTE_PATH>(start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)
+        self.into_full().unwrap().node_recursive_cata::<_, _, _, _, _, _, _, _, _, COMPUTE_PATH>(start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)
     }
 }
 

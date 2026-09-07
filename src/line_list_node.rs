@@ -7,7 +7,6 @@ use local_or_heap::LocalOrHeap;
 use crate::utils::{BitMask, ByteMask};
 use crate::alloc::Allocator;
 use crate::trie_node::*;
-use crate::gxhash::HashMap;
 use crate::ring::*;
 use crate::dense_byte_node::{DenseByteNode, ByteNode, CoFree, OrdinaryCoFree, CellCoFree};
 use crate::tiny_node::TinyRefNode;
@@ -2768,7 +2767,7 @@ impl<V: Clone + Send + Sync, A: Allocator> LineListNode<V, A> {
     /// Finishes a two-children node whose second child needs the general (possibly cached) traversal.
     /// Out of line, see the caller.
     #[inline(never)]
-    fn two_children_1b_keys_tail<Acc, W, Err, StartF, FoldChildF, MapF, FinalizeF, CollapseF, const COMPUTE_PATH: bool>(child_node: &TrieNodeODRc<V, A>, key0_byte: u8, key1_byte: u8, mut acc: Acc, start_f: StartF, fold_child_f: FoldChildF, map_f: MapF, finalize_f: FinalizeF, collapse_f: CollapseF, cache: &mut HashMap<u64, W>) -> Result<W, Err>
+    fn two_children_1b_keys_tail<Acc, W, Err, StartF, FoldChildF, MapF, FinalizeF, CollapseF, C, const COMPUTE_PATH: bool>(child_node: &TrieNodeODRc<V, A>, key0_byte: u8, key1_byte: u8, mut acc: Acc, start_f: StartF, fold_child_f: FoldChildF, map_f: MapF, finalize_f: FinalizeF, collapse_f: CollapseF, cache: &mut C) -> Result<W, Err>
     where
         W: Clone,
         StartF: Copy + Fn(&ByteMask) -> Result<Acc, Err>,
@@ -2776,11 +2775,12 @@ impl<V: Clone + Send + Sync, A: Allocator> LineListNode<V, A> {
         MapF: Copy + Fn(&V, &[u8]) -> Result<W, Err>,
     FinalizeF: Copy + Fn(&ByteMask, Option<Acc>, &[u8]) -> Result<W, Err>,
         CollapseF: Copy + Fn(&V, W) -> Result<W, Err>,
+        C: CataCache<V, A, W>,
     {
         // The mask is rebuilt here rather than passed by reference, so the caller's copy never needs to
         // live in memory across its direct recursive call
         let mask = byte_pair_mask(key0_byte, key1_byte);
-        fold_child_f(&mask, recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(child_node, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?, &mut acc)?;
+        fold_child_f(&mask, recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(child_node, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?, &mut acc)?;
         finalize_f(&mask, Some(acc), &[])
     }
 
@@ -2793,7 +2793,7 @@ impl<V: Clone + Send + Sync, A: Allocator> LineListNode<V, A> {
     /// Picks the traversal for this node's layout.  Inlined into the callers so a node goes straight to
     /// the function for its layout with no intermediate frame.
     #[inline(always)]
-    pub(crate) fn node_recursive_cata<Acc, W, Err, StartF, FoldChildF, MapF, FinalizeF, CollapseF, const COMPUTE_PATH: bool>(&self, start_f: StartF, fold_child_f: FoldChildF, map_f: MapF, finalize_f: FinalizeF, collapse_f: CollapseF, cache: &mut HashMap<u64, W>) -> Result<W, Err>
+    pub(crate) fn node_recursive_cata<Acc, W, Err, StartF, FoldChildF, MapF, FinalizeF, CollapseF, C, const COMPUTE_PATH: bool>(&self, start_f: StartF, fold_child_f: FoldChildF, map_f: MapF, finalize_f: FinalizeF, collapse_f: CollapseF, cache: &mut C) -> Result<W, Err>
     where
         W: Clone,
         StartF: Copy + Fn(&ByteMask) -> Result<Acc, Err>,
@@ -2801,11 +2801,12 @@ impl<V: Clone + Send + Sync, A: Allocator> LineListNode<V, A> {
         MapF: Copy + Fn(&V, &[u8]) -> Result<W, Err>,
     FinalizeF: Copy + Fn(&ByteMask, Option<Acc>, &[u8]) -> Result<W, Err>,
         CollapseF: Copy + Fn(&V, W) -> Result<W, Err>,
+        C: CataCache<V, A, W>,
     {
         if self.has_1b_keys_layout() {
-            self.node_recursive_cata_1b_keys::<_, _, _, _, _, _, _, _, COMPUTE_PATH>(start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)
+            self.node_recursive_cata_1b_keys::<_, _, _, _, _, _, _, _, _, COMPUTE_PATH>(start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)
         } else {
-            self.node_recursive_cata_general::<_, _, _, _, _, _, _, _, COMPUTE_PATH>(start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)
+            self.node_recursive_cata_general::<_, _, _, _, _, _, _, _, _, COMPUTE_PATH>(start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)
         }
     }
 
@@ -2813,7 +2814,7 @@ impl<V: Clone + Send + Sync, A: Allocator> LineListNode<V, A> {
     /// under 1-byte keys.  Kept separate from the general dispatch so that its frame stays small and the
     /// optimizer can turn the recursion down a spine of such nodes into a loop.
     #[inline(never)]
-    fn node_recursive_cata_1b_keys<Acc, W, Err, StartF, FoldChildF, MapF, FinalizeF, CollapseF, const COMPUTE_PATH: bool>(&self, start_f: StartF, fold_child_f: FoldChildF, map_f: MapF, finalize_f: FinalizeF, collapse_f: CollapseF, cache: &mut HashMap<u64, W>) -> Result<W, Err>
+    fn node_recursive_cata_1b_keys<Acc, W, Err, StartF, FoldChildF, MapF, FinalizeF, CollapseF, C, const COMPUTE_PATH: bool>(&self, start_f: StartF, fold_child_f: FoldChildF, map_f: MapF, finalize_f: FinalizeF, collapse_f: CollapseF, cache: &mut C) -> Result<W, Err>
     where
         W: Clone,
         StartF: Copy + Fn(&ByteMask) -> Result<Acc, Err>,
@@ -2821,6 +2822,7 @@ impl<V: Clone + Send + Sync, A: Allocator> LineListNode<V, A> {
         MapF: Copy + Fn(&V, &[u8]) -> Result<W, Err>,
     FinalizeF: Copy + Fn(&ByteMask, Option<Acc>, &[u8]) -> Result<W, Err>,
         CollapseF: Copy + Fn(&V, W) -> Result<W, Err>,
+        C: CataCache<V, A, W>,
     {
         // Both layouts are identified by the whole header, so no key bytes are read to get here, and two
         // values under distinct 1-byte keys cannot share a first byte (equal keys would be one path).
@@ -2829,29 +2831,29 @@ impl<V: Clone + Send + Sync, A: Allocator> LineListNode<V, A> {
         let mask = byte_pair_mask(key0_byte, key1_byte);
         let mut acc = start_f(&mask)?;
         if self.header == TWO_CHILDREN_1B_KEYS {
-            // An unshared list-node child needs no cache lookup, so it is called directly rather than
-            // through the generic dispatch
+            // A list-node child the cache does not want to see (an unshared node, for the ordinary cache)
+            // needs no cache lookup, so it is called directly rather than through the generic dispatch
             let child_node = unsafe{ self.child_in_slot::<0>() };
             let child_w = match child_node.as_tagged() {
-                TaggedNodeRef::LineListNode(child) if child_node.refcount() <= 1 => child.node_recursive_cata::<_, _, _, _, _, _, _, _, COMPUTE_PATH>(start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?,
-                _ => recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(child_node, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?,
+                TaggedNodeRef::LineListNode(child) if cache.skips(child_node) => child.node_recursive_cata::<_, _, _, _, _, _, _, _, _, COMPUTE_PATH>(start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?,
+                _ => recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(child_node, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?,
             };
             fold_child_f(&mask, child_w, &mut acc)?;
-            // The second child is in tail position.  When it is an unshared node of one of these two layouts
+            // The second child is in tail position.  When it is an uncached node of one of these two layouts
             // it is a direct self-call followed only by the fold and return, and every other case is kept
             // out of line, so nothing merges into that tail.  That lets the optimizer turn the recursion down
             // a spine of such nodes into a loop when the algebra is an associative fold, which is what makes
             // deep tries of two-slot nodes cheap to traverse.
             let child_node = unsafe{ self.child_in_slot::<1>() };
-            if child_node.refcount() <= 1 {
+            if cache.skips(child_node) {
                 if let TaggedNodeRef::LineListNode(child) = child_node.as_tagged() {
                     if child.has_1b_keys_layout() {
-                        fold_child_f(&mask, child.node_recursive_cata_1b_keys::<_, _, _, _, _, _, _, _, COMPUTE_PATH>(start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?, &mut acc)?;
+                        fold_child_f(&mask, child.node_recursive_cata_1b_keys::<_, _, _, _, _, _, _, _, _, COMPUTE_PATH>(start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?, &mut acc)?;
                         return finalize_f(&mask, Some(acc), &[])
                     }
                 }
             }
-            Self::two_children_1b_keys_tail::<_, _, _, _, _, _, _, _, COMPUTE_PATH>(child_node, key0_byte, key1_byte, acc, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)
+            Self::two_children_1b_keys_tail::<_, _, _, _, _, _, _, _, _, COMPUTE_PATH>(child_node, key0_byte, key1_byte, acc, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)
         } else {
             debug_assert_eq!(self.header, TWO_VALS_1B_KEYS);
             fold_child_f(&mask, map_f(unsafe{ self.val_in_slot::<0>() }, &[])?, &mut acc)?;
@@ -2862,7 +2864,7 @@ impl<V: Clone + Send + Sync, A: Allocator> LineListNode<V, A> {
 
     /// The general dispatch over every two-slot layout. See [`Self::node_recursive_cata`].
     #[inline(never)]
-    fn node_recursive_cata_general<Acc, W, Err, StartF, FoldChildF, MapF, FinalizeF, CollapseF, const COMPUTE_PATH: bool>(&self, start_f: StartF, fold_child_f: FoldChildF, map_f: MapF, finalize_f: FinalizeF, collapse_f: CollapseF, cache: &mut HashMap<u64, W>) -> Result<W, Err>
+    fn node_recursive_cata_general<Acc, W, Err, StartF, FoldChildF, MapF, FinalizeF, CollapseF, C, const COMPUTE_PATH: bool>(&self, start_f: StartF, fold_child_f: FoldChildF, map_f: MapF, finalize_f: FinalizeF, collapse_f: CollapseF, cache: &mut C) -> Result<W, Err>
     where
         W: Clone,
         StartF: Copy + Fn(&ByteMask) -> Result<Acc, Err>,
@@ -2870,6 +2872,7 @@ impl<V: Clone + Send + Sync, A: Allocator> LineListNode<V, A> {
         MapF: Copy + Fn(&V, &[u8]) -> Result<W, Err>,
     FinalizeF: Copy + Fn(&ByteMask, Option<Acc>, &[u8]) -> Result<W, Err>,
         CollapseF: Copy + Fn(&V, W) -> Result<W, Err>,
+        C: CataCache<V, A, W>,
     {
         //Pair node can have the following permutations: (Slot0, Slot1).  The 1-byte-key forms of cases 5
         // and 8 are normally handled by `node_recursive_cata_1b_keys`; they only reach this dispatch through
@@ -2913,7 +2916,7 @@ impl<V: Clone + Send + Sync, A: Allocator> LineListNode<V, A> {
             //Case 2 (Child, Empty) = (1 << 3) + (1 << 1) | (1 << 3) + (1 << 1) + 1
             10 | 11 => {
                 let child_node = unsafe{ self.child_in_slot::<0>() };
-                let child_w = recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(child_node, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?;
+                let child_w = recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(child_node, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?;
                 let path = unsafe{ self.key_unchecked::<0>() };
                 summarize!(None, Some(child_w), path)
             },
@@ -2928,11 +2931,11 @@ impl<V: Clone + Send + Sync, A: Allocator> LineListNode<V, A> {
                     debug_assert_eq!(key0.len(), 1);
                     debug_assert_eq!(key1.len(), 1);
                     let val = unsafe { self.val_in_slot::<1>() };
-                    let child_w = collapse_slot_val::<_, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(child_node, val, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?;
+                    let child_w = collapse_slot_val::<_, _, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(child_node, val, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?;
                     summarize!(None, Some(child_w), key0)
                 } else {
                     //Case 4
-                    let child_w = recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(child_node, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?;
+                    let child_w = recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(child_node, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?;
                     let path = &key0[1..];
                     let mask = ByteMask::from((key0_byte, key1_byte));
                     let mut acc = start_f(&mask)?;
@@ -2955,11 +2958,11 @@ impl<V: Clone + Send + Sync, A: Allocator> LineListNode<V, A> {
                     let mask = ByteMask::from((key0_byte, key1_byte));
                 let mut acc = start_f(&mask)?;
                 let child_node = unsafe{ self.child_in_slot::<0>() };
-                let child_w = recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(child_node, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?;
+                let child_w = recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(child_node, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?;
                 fold_child_f(&mask, summarize!(None, Some(child_w), path0)?, &mut acc)?;
 
                 let child_node = unsafe{ self.child_in_slot::<1>() };
-                let child_w = recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(child_node, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?;
+                let child_w = recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(child_node, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?;
                 fold_child_f(&mask, summarize!(None, Some(child_w), path1)?, &mut acc)?;
 
                 finalize_f(&mask, Some(acc), &[])
@@ -3015,11 +3018,11 @@ impl<V: Clone + Send + Sync, A: Allocator> LineListNode<V, A> {
                     debug_assert_eq!(key0.len(), 1);
                     let val = unsafe { self.val_in_slot::<0>() };
                     let child_w = if key1.len() == 1 {
-                        collapse_slot_val::<_, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(child_node, val, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?
+                        collapse_slot_val::<_, _, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(child_node, val, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?
                     } else {
                         // The value sits at the top of the child's suffix, so split off the suffix's first
                         // byte as a value-bearing branch above the remaining run
-                        let child_w = recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(child_node, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?;
+                        let child_w = recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(child_node, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?;
                         let child_w = summarize!(None, Some(child_w), &key1[2..])?;
                         let mask = ByteMask::from(key1[1]);
                         let mut acc = start_f(&mask)?;
@@ -3036,7 +3039,7 @@ impl<V: Clone + Send + Sync, A: Allocator> LineListNode<V, A> {
                     let path = &key0[1..];
                     fold_child_f(&mask, summarize!(Some(val), None, path)?, &mut acc)?;
 
-                    let child_w = recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(child_node, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?;
+                    let child_w = recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(child_node, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?;
                     let path = &key1[1..];
                     fold_child_f(&mask, summarize!(None, Some(child_w), path)?, &mut acc)?;
 

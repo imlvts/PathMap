@@ -67,7 +67,6 @@
 //!
 use core::convert::Infallible;
 use std::hash::Hasher;
-use std::ptr::slice_from_raw_parts;
 use reusing_vec::ReusingQueue;
 
 use crate::utils::*;
@@ -156,11 +155,7 @@ macro_rules! define_cached_cata_trait {
                 V: std::hash::Hash,
                 Self: Sized,
             {
-                self.hash_with(|v| {
-                    let mut hasher = gxhash::GxHasher::with_seed(0);
-                    v.hash(&mut hasher);
-                    hasher.finish_u128()
-                })
+                self.hash_with(trie_hash::value_hash)
             }
 
             /// Hashes the logical trie using the provided function to hash values.
@@ -172,21 +167,10 @@ macro_rules! define_cached_cata_trait {
                 F: Fn(&V) -> u128,
                 Self: Sized,
             {
-                const SEED: i64 = 0b0100001010101101111110010110100110000010011000100100100111110111i64;
+                use trie_hash::node_hasher;
                 let val_hash = &val_hash;
-                let node_hasher = |bm: &ByteMask| {
-                    let mut hasher = gxhash::GxHasher::with_seed(SEED);
-                    hasher.write(unsafe { slice_from_raw_parts(bm.0.as_ptr() as *const u8, 32).as_ref().unwrap_unchecked() });
-                    hasher
-                };
-                let with_value = |value: &V, below: u128| {
-                    let mut hasher = gxhash::GxHasher::with_seed(SEED);
-                    hasher.write_u128(below);
-                    hasher.write_u128(val_hash(value));
-                    hasher.finish_u128()
-                };
-                // A leaf value sits on an empty node
-                let leaf = node_hasher(&ByteMask::EMPTY).finish_u128();
+                let with_value = |value: &V, below: u128| trie_hash::with_value(val_hash(value), below);
+                let leaf = trie_hash::leaf();
                 self.factored_cata::<gxhash::GxHasher, u128, Infallible, _, _, _, _, _>(
                     |bm| Ok(node_hasher(bm)),
                     |_bm, child, hasher| { hasher.write_u128(child); Ok(()) },
@@ -338,6 +322,52 @@ macro_rules! define_cached_cata_trait {
             }
         }
     };
+}
+
+/// The hashing scheme of [`CatamorphismCached::hash_with`], shared with merkleization so that a
+/// merkleized trie's hash is the trie's cata hash
+pub(crate) mod trie_hash {
+    use core::hash::Hasher;
+    use core::ptr::slice_from_raw_parts;
+    use crate::gxhash;
+    use crate::utils::ByteMask;
+
+    const SEED: i64 = 0b0100001010101101111110010110100110000010011000100100100111110111i64;
+
+    /// Hashes a value on its own, with the default seed
+    #[inline(always)]
+    pub(crate) fn value_hash<V: core::hash::Hash>(v: &V) -> u128 {
+        let mut hasher = gxhash::GxHasher::with_seed(0);
+        v.hash(&mut hasher);
+        hasher.finish_u128()
+    }
+    /// Starts the hash of a logical node from its child mask; the children's hashes are written next
+    #[inline(always)]
+    pub(crate) fn node_hasher(bm: &ByteMask) -> gxhash::GxHasher {
+        let mut hasher = gxhash::GxHasher::with_seed(SEED);
+        hasher.write(unsafe { slice_from_raw_parts(bm.0.as_ptr() as *const u8, 32).as_ref().unwrap_unchecked() });
+        hasher
+    }
+    /// Places a value's hash on top of the hash of the subtrie below it
+    #[inline(always)]
+    pub(crate) fn with_value(val_hash: u128, below: u128) -> u128 {
+        let mut hasher = gxhash::GxHasher::with_seed(SEED);
+        hasher.write_u128(below);
+        hasher.write_u128(val_hash);
+        hasher.finish_u128()
+    }
+    /// The hash of the empty node a leaf value sits on
+    #[inline(always)]
+    pub(crate) fn leaf() -> u128 {
+        node_hasher(&ByteMask::EMPTY).finish_u128()
+    }
+    /// Hashes one byte of a non-branching run above `below`, as a node with a single child
+    #[inline(always)]
+    pub(crate) fn step(byte: u8, below: u128) -> u128 {
+        let mut hasher = node_hasher(&ByteMask::from(byte));
+        hasher.write_u128(below);
+        hasher.finish_u128()
+    }
 }
 
 define_cached_cata_trait! {
