@@ -49,6 +49,7 @@ const CASES: &[(&str, &str)] = &[
     ("merkleize_dangling", "merkleize aborts on two identical dangling subtries"),
     ("shared_dangling_cow", "writing into a shared subtrie that holds a dangling path aborts"),
     ("meet_k_path_hang", "meet_k_path_into loops forever when the focus has no children (HANGS)"),
+    ("ascend_until_then_write", "a write after ascend_until_branch lands outside the write zipper's root (finding 9's write side)"),
 ];
 
 fn main() {
@@ -436,6 +437,39 @@ unwraps a child that is not there)"),
 
         // Does not terminate: `descend_first_k_path`'s default loop cannot make
         // progress when the focus has no children.
+        // Finding 9's write side.  `ascend_until_branch` leaves a write zipper's node stack
+        // inconsistent when the zipper is rooted at a node boundary; a write through that stack
+        // lands outside the zipper's root.  Found by the differential harness's `map_hash` op
+        // (lean/PathMapModel/Hash.lean): every zipper fingerprint agreed with the model while
+        // the hash of the whole map did not, because the misplaced value sits where no zipper
+        // was looking.  Debug: the assertion in `root_unchecked`.  Release: silent misplacement.
+        "ascend_until_then_write" => {
+            let mut src = PathMap::<u64>::new();
+            src.set_val_at(&[][..], 0);
+            src.set_val_at(&[0u8, 1][..], 0);
+            src.set_val_at(&[1u8][..], 0);
+            let mut rz = src.read_zipper();
+            rz.descend_to_byte(0); // source focus [0]: the subtrie {[1] = 0}
+            for back_to_root in ["ascend_until_branch", "reset"] {
+                let mut map = PathMap::<u64>::new();
+                map.create_path(&[0u8, 0]);
+                {
+                    let mut wz = map.write_zipper_at_path(&[0u8, 0]);
+                    wz.descend_to(&[0u8]);
+                    wz.get_val_or_set_mut_with(|| 0);            // [0,0,0] = 0
+                    wz.meet_2(&rz, &rz);                          // [0,0,0,1] = 0: the focus now has a child
+                    if back_to_root == "reset" { wz.reset() } else { wz.ascend_until_branch(); }
+                    println!("  {back_to_root}: path()={:?}", wz.path());
+                    let st = wz.join_map_into(rz.make_map());     // {[1] = 0} joined at the zipper root [0,0]
+                    wz.descend_to_byte(1);
+                    println!("    join_map_into -> {st:?}; through the live zipper [0,0,1]: path_exists={} val={:?}", wz.path_exists(), wz.val());
+                }
+                println!("    map after the zipper is dropped: {}", paths(&map));
+            }
+            println!("  expected both times: _ [0] [0, 0] [0, 0, 0]=0 [0, 0, 0, 1]=0 [0, 0, 1]=0");
+            println!("  (after ascend_until_branch the joined value lands at [1], outside the zipper's root [0,0])");
+        }
+
         "meet_k_path_hang" => {
             let mut map = PathMap::<u64>::new();
             map.insert(b"ab", 1u64);

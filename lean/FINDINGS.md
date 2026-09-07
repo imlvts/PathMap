@@ -295,6 +295,23 @@ wrong — and a subsequent write would write through the same stack.
 `ascend_until_branch` fails the same way.  A plain `reset()` from the same
 position is fine, and a `ReadZipper` in the same shape is fine.
 
+**The write side, confirmed** (`case: ascend_until_then_write`).  A write zipper
+rooted at the dangling path `[0,0]`, with a value and a child below its focus,
+returns to its root with `ascend_until_branch` and then `join_map_into`s a
+source holding `[1] = 0`.  Through the live zipper the value is at `[0,0,1]`;
+once the zipper is dropped and the map is read afresh it is at `[1]`, outside
+the zipper's root, and `[0,0,1]` does not exist.  Debug builds stop at the
+`stack.len() == 0` assertion in `root_unchecked`; release builds misplace the
+data silently.  `reset()` in place of `ascend_until_branch` gives the correct
+map.
+
+This was found by the harness's `map_hash` op (`lean/PathMapModel/Hash.lean`):
+every zipper fingerprint agreed with the model, because no zipper was looking at
+`[1]`, and only the hash of the whole map disagreed — twenty operations before
+the final dump would have.  The shrunk input's first divergence is therefore the
+`map_hash` line rather than an `ascend_until` line, which is why
+`differential.py`'s classifier does not attribute it to this finding.
+
 ## 10. `to_next_k_path` underflows on a borrowed-path zipper
 
 `case: to_next_k_path_borrowed` — **debug: panic; release: wrong branch taken**
