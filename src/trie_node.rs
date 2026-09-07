@@ -2370,12 +2370,21 @@ mod tagged_node_ref {
 }
 
 /// Internal implementation of `CatamorphismCached::factored_cata_jumping`
-pub(crate) fn recursive_cata_cached<A, V, Acc, W, Err, StartF, FoldChildF, FinalizeF, const COMPUTE_PATH: bool>(
+///
+/// Summarizes `node` without the value the parent stores for its root position, so the `W` can be
+/// cached whenever the node is shared.  A caller that holds such a value places it on top with
+/// [`collapse_slot_val`].
+///
+/// This is inlined into the node implementations, which own the recursion frames, so that each node
+/// type's traversal is optimized on its own rather than as one function containing every node type.
+#[inline(always)]
+pub(crate) fn recursive_cata_cached<A, V, Acc, W, Err, StartF, FoldChildF, MapF, FinalizeF, CollapseF, const COMPUTE_PATH: bool>(
     node: &TrieNodeODRc<V, A>,
-    passed_in_val: Option<&V>,
     start_f: StartF,
     fold_child_f: FoldChildF,
+    map_f: MapF,
     finalize_f: FinalizeF,
+    collapse_f: CollapseF,
     cache: &mut HashMap<u64, W>,
 ) -> Result<W, Err>
 where
@@ -2384,34 +2393,68 @@ where
     W: Clone,
     StartF: Copy + Fn(&ByteMask) -> Result<Acc, Err>,
     FoldChildF: Copy + Fn(&ByteMask, W, &mut Acc) -> Result<(), Err>,
-    FinalizeF: Copy + Fn(&ByteMask, Option<&V>, Option<Acc>, &[u8]) -> Result<W, Err>,
+    MapF: Copy + Fn(&V, &[u8]) -> Result<W, Err>,
+    FinalizeF: Copy + Fn(&ByteMask, Option<Acc>, &[u8]) -> Result<W, Err>,
+    CollapseF: Copy + Fn(&V, W) -> Result<W, Err>,
 {
-    // NOTE: A caller-supplied value can make this trie-node boundary fall within a factored_cata callback,
-    // therefore the W is not cacheable based on node ID alone.
-    // FUTURE: When the node contract associates values at the root of nodes with the node and not with the parent,
-    // then the `passed_in_val.is_none()` check can be removed
-    if passed_in_val.is_none() && !node.is_empty() && node.refcount() > 1 {
+    if !node.is_empty() && node.refcount() > 1 {
         let hash = node.shared_node_id();
         match cache.get(&hash) {
             Some(cached) => Ok(cached.clone()),
             None => {
-                let w = recursive_cata_dispatch::<_, _, _, _, _, _, _, _, COMPUTE_PATH>(node, passed_in_val, start_f, fold_child_f, finalize_f, cache)?;
+                let w = recursive_cata_dispatch::<_, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(node, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?;
                 cache.insert(hash, w.clone());
                 Ok(w)
             },
         }
     } else {
-        recursive_cata_dispatch::<_, _, _, _, _, _, _, _, COMPUTE_PATH>(node, passed_in_val, start_f, fold_child_f, finalize_f, cache)
+        recursive_cata_dispatch::<_, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(node, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)
     }
 }
 
-#[inline(always)]
-fn recursive_cata_dispatch<A, V, Acc, W, Err, StartF, FoldChildF, FinalizeF, const COMPUTE_PATH: bool>(
+/// Runs the recursive cached cata from `node`, with `root_val` being the value at the root position
+pub(crate) fn recursive_cata_root<A, V, Acc, W, Err, StartF, FoldChildF, MapF, FinalizeF, CollapseF, const COMPUTE_PATH: bool>(
     node: &TrieNodeODRc<V, A>,
-    passed_in_val: Option<&V>,
+    root_val: Option<&V>,
     start_f: StartF,
     fold_child_f: FoldChildF,
+    map_f: MapF,
     finalize_f: FinalizeF,
+    collapse_f: CollapseF,
+) -> Result<W, Err>
+where
+    V: Clone + Send + Sync,
+    A: Allocator,
+    W: Clone,
+    StartF: Copy + Fn(&ByteMask) -> Result<Acc, Err>,
+    FoldChildF: Copy + Fn(&ByteMask, W, &mut Acc) -> Result<(), Err>,
+    MapF: Copy + Fn(&V, &[u8]) -> Result<W, Err>,
+    FinalizeF: Copy + Fn(&ByteMask, Option<Acc>, &[u8]) -> Result<W, Err>,
+    CollapseF: Copy + Fn(&V, W) -> Result<W, Err>,
+{
+    let mut cache = HashMap::default();
+    match root_val {
+        Some(val) => collapse_slot_val::<_, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(node, val, start_f, fold_child_f, map_f, finalize_f, collapse_f, &mut cache),
+        None => recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(node, start_f, fold_child_f, map_f, finalize_f, collapse_f, &mut cache),
+    }
+}
+
+/// Summarizes a child node that has a value stored for its root position in the parent's slot
+///
+/// The child is summarized without the value (and cached when shared) and `collapse_f` then places
+/// the value on top.
+//
+//NOTE: `#[inline(always)]` here bloats the unoptimized recursive frame enough to overflow the stack on
+// deep paths in debug builds, so leave the decision to the optimizer
+#[inline]
+pub(crate) fn collapse_slot_val<A, V, Acc, W, Err, StartF, FoldChildF, MapF, FinalizeF, CollapseF, const COMPUTE_PATH: bool>(
+    node: &TrieNodeODRc<V, A>,
+    val: &V,
+    start_f: StartF,
+    fold_child_f: FoldChildF,
+    map_f: MapF,
+    finalize_f: FinalizeF,
+    collapse_f: CollapseF,
     cache: &mut HashMap<u64, W>,
 ) -> Result<W, Err>
 where
@@ -2420,14 +2463,40 @@ where
     W: Clone,
     StartF: Copy + Fn(&ByteMask) -> Result<Acc, Err>,
     FoldChildF: Copy + Fn(&ByteMask, W, &mut Acc) -> Result<(), Err>,
-    FinalizeF: Copy + Fn(&ByteMask, Option<&V>, Option<Acc>, &[u8]) -> Result<W, Err>,
+    MapF: Copy + Fn(&V, &[u8]) -> Result<W, Err>,
+    FinalizeF: Copy + Fn(&ByteMask, Option<Acc>, &[u8]) -> Result<W, Err>,
+    CollapseF: Copy + Fn(&V, W) -> Result<W, Err>,
+{
+    let w = recursive_cata_cached::<_, _, _, _, _, _, _, _, _, _, COMPUTE_PATH>(node, start_f, fold_child_f, map_f, finalize_f, collapse_f, cache)?;
+    collapse_f(val, w)
+}
+
+#[inline(always)]
+fn recursive_cata_dispatch<A, V, Acc, W, Err, StartF, FoldChildF, MapF, FinalizeF, CollapseF, const COMPUTE_PATH: bool>(
+    node: &TrieNodeODRc<V, A>,
+    start_f: StartF,
+    fold_child_f: FoldChildF,
+    map_f: MapF,
+    finalize_f: FinalizeF,
+    collapse_f: CollapseF,
+    cache: &mut HashMap<u64, W>,
+) -> Result<W, Err>
+where
+    V: Clone + Send + Sync,
+    A: Allocator,
+    W: Clone,
+    StartF: Copy + Fn(&ByteMask) -> Result<Acc, Err>,
+    FoldChildF: Copy + Fn(&ByteMask, W, &mut Acc) -> Result<(), Err>,
+    MapF: Copy + Fn(&V, &[u8]) -> Result<W, Err>,
+    FinalizeF: Copy + Fn(&ByteMask, Option<Acc>, &[u8]) -> Result<W, Err>,
+    CollapseF: Copy + Fn(&V, W) -> Result<W, Err>,
 {
     match node.as_tagged() {
-        TaggedNodeRef::DenseByteNode(node) => { node.node_recursive_cata::<_, _, _, _, _, _, COMPUTE_PATH>(passed_in_val, start_f, fold_child_f, finalize_f, cache) }
-        TaggedNodeRef::LineListNode(node) => { node.node_recursive_cata::<_, _, _, _, _, _, COMPUTE_PATH>(passed_in_val, start_f, fold_child_f, finalize_f, cache) }
-        TaggedNodeRef::CellByteNode(node) => { node.node_recursive_cata::<_, _, _, _, _, _, COMPUTE_PATH>(passed_in_val, start_f, fold_child_f, finalize_f, cache) }
-        TaggedNodeRef::TinyRefNode(node) => { node.node_recursive_cata::<_, _, _, _, _, _, COMPUTE_PATH>(passed_in_val, start_f, fold_child_f, finalize_f, cache) }
-        TaggedNodeRef::EmptyNode => { finalize_f(&ByteMask::EMPTY, passed_in_val, None, &[]) }
+        TaggedNodeRef::DenseByteNode(node) => { node.node_recursive_cata::<_, _, _, _, _, _, _, _, COMPUTE_PATH>(start_f, fold_child_f, map_f, finalize_f, collapse_f, cache) }
+        TaggedNodeRef::LineListNode(node) => { node.node_recursive_cata::<_, _, _, _, _, _, _, _, COMPUTE_PATH>(start_f, fold_child_f, map_f, finalize_f, collapse_f, cache) }
+        TaggedNodeRef::CellByteNode(node) => { node.node_recursive_cata::<_, _, _, _, _, _, _, _, COMPUTE_PATH>(start_f, fold_child_f, map_f, finalize_f, collapse_f, cache) }
+        TaggedNodeRef::TinyRefNode(node) => { node.node_recursive_cata::<_, _, _, _, _, _, _, _, COMPUTE_PATH>(start_f, fold_child_f, map_f, finalize_f, collapse_f, cache) }
+        TaggedNodeRef::EmptyNode => { finalize_f(&ByteMask::EMPTY, None, &[]) }
     }
 }
 

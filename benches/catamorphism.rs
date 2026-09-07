@@ -43,10 +43,12 @@ fn factored_cata_jumping_val_count(bencher: Bencher) {
     let mut sink = 0usize;
     bencher.bench_local(|| {
         let rz = map.read_zipper();
-        *black_box(&mut sink) = CatamorphismCached::<(), GlobalAlloc>::factored_cata_jumping::<_, _, Infallible, _, _, _, false>(&rz,
+        *black_box(&mut sink) = CatamorphismCached::<(), GlobalAlloc>::factored_cata_jumping::<_, _, Infallible, _, _, _, _, _, false>(&rz,
             |_| Ok(0usize),
             |_mask, w: usize, total| { *total += w; Ok(()) },
-            |_mask, v, total, _| Ok((v.is_some() as usize) + total.unwrap_or(0)),
+            |_val, _| Ok(1),
+            |_mask, total, _| Ok(total.unwrap_or(0)),
+            |_val, below| Ok(1 + below),
         ).unwrap();
     });
     assert_eq!(sink, MAP_COUNT as usize);
@@ -59,34 +61,20 @@ fn factored_cata_binary_tree_leaf_count(bencher: Bencher) {
     bencher.bench_local(|| {
         let rz = map.read_zipper();
         *black_box(&mut sink) = CatamorphismCached::<(), GlobalAlloc>
-            ::factored_cata_jumping::<_, _, Infallible, _, _, _, false>(&rz,
+            ::factored_cata_jumping::<_, _, Infallible, _, _, _, _, _, false>(&rz,
                 |_| Ok(0usize),
                 |_mask, child_count: usize, total| {
                     *total += child_count;
                     Ok(())
                 },
-                |_mask, value, total, _| Ok((value.is_some() as usize) + total.unwrap_or(0)),
+                // A leaf is a value with nothing below it
+                |_value, _| Ok(1),
+                |_mask, total, _| Ok(total.unwrap_or(0)),
+                |_value, below| Ok(below),
             )
             .unwrap();
     });
     assert_eq!(sink, BINARY_TREE_LEAF_COUNT);
-}
-
-#[divan::bench()]
-fn cached_jumping_cata_val_count(bencher: Bencher) {
-    let map = build_map(MAP_COUNT);
-    let mut sink = 0usize;
-    bencher.bench_local(|| {
-        let rz = map.read_zipper();
-        *black_box(&mut sink) = CatamorphismCached::<(), GlobalAlloc>::cata_jumping_cached(&rz, |_mask: &ByteMask, children: &mut [usize], val, _sub_path| {
-            let mut sum: usize = children.iter().sum();
-            if val.is_some() {
-                sum += 1;
-            }
-            sum
-        });
-    });
-    assert_eq!(sink, MAP_COUNT as usize);
 }
 
 #[divan::bench()]
@@ -95,7 +83,7 @@ fn factored_cata_jumping_total_len(bencher: Bencher) {
     let mut sink = (0usize, 0usize);
     bencher.bench_local(|| {
         let rz = map.read_zipper();
-        *black_box(&mut sink) = CatamorphismCached::<(), GlobalAlloc>::factored_cata_jumping::<_, _, Infallible, _, _, _, true>(&rz,
+        *black_box(&mut sink) = CatamorphismCached::<(), GlobalAlloc>::factored_cata_jumping::<_, _, Infallible, _, _, _, _, _, true>(&rz,
             |_| Ok((0usize, 0usize)),
             |_mask: &ByteMask, w: (usize, usize), acc: &mut (usize, usize)| {
                 acc.0 += w.0;
@@ -104,37 +92,14 @@ fn factored_cata_jumping_total_len(bencher: Bencher) {
                 acc.1 += w.1 + w.0;
                 Ok(())
             },
-            |_mask: &ByteMask, val, acc, prefix| {
+            // A leaf's own path runs through `prefix`
+            |_val: &(), prefix| Ok((1usize, prefix.len())),
+            |_mask: &ByteMask, acc, prefix| {
                 let (count, total_len) = acc.unwrap_or((0, 0));
-                let count = count + val.is_some() as usize;
                 Ok((count, total_len + count * prefix.len()))
             },
+            |_val, (count, total_len): (usize, usize)| Ok((count + 1, total_len)),
         ).unwrap();
-    });
-    assert_eq!(sink, (MAP_COUNT as usize, MAP_COUNT as usize * 8));
-}
-
-#[divan::bench()]
-fn cached_jumping_cata_total_len(bencher: Bencher) {
-    let map = build_map(MAP_COUNT);
-    let mut sink = (0usize, 0usize);
-    bencher.bench_local(|| {
-        let rz = map.read_zipper();
-        *black_box(&mut sink) = CatamorphismCached::<(), GlobalAlloc>::cata_jumping_cached(&rz, |mask: &ByteMask, children: &mut [(usize, usize)], val, sub_path| {
-            let mut count = 0usize;
-            let mut total_len = 0usize;
-            let prefix_len = sub_path.len();
-            if val.is_some() {
-                count += 1;
-                total_len += prefix_len;
-            }
-            for (_byte, child) in mask.iter().zip(children.iter_mut()) {
-                count += child.0;
-                // The child is below one mask byte as well as this callback's prefix.
-                total_len += child.1 + child.0 * (prefix_len + 1);
-            }
-            (count, total_len)
-        });
     });
     assert_eq!(sink, (MAP_COUNT as usize, MAP_COUNT as usize * 8));
 }

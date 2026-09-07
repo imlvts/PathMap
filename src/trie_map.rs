@@ -501,10 +501,12 @@ impl<V: Clone + Send + Sync + Unpin, A: Allocator> PathMap<V, A> {
     pub fn val_count(&self) -> usize {
         match self.root() {
             Some(_root) => {
-                match self.factored_cata_jumping::<_, _, Infallible, _, _, _, false>(
+                match self.factored_cata_jumping::<_, _, Infallible, _, _, _, _, _, false>(
                     |_| Ok(0usize),
                     |_mask, w: usize, total| { *total += w; Ok(()) },
-                    |_mask, v, total, _| Ok((v.is_some() as usize) + total.unwrap_or(0)),
+                    |_val, _| Ok(1),
+                    |_mask, total, _| Ok(total.unwrap_or(0)),
+                    |_val, below| Ok(1 + below),
                 ) {
                     Ok(count) => count,
                     Err(never) => match never {},

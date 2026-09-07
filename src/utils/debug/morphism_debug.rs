@@ -4,55 +4,63 @@ use crate::utils::ByteMask;
 use crate::alloc::Allocator;
 use crate::PathMap;
 use crate::zipper::*;
-use crate::morphisms::cata_jumping_cached_debug_body;
+use crate::morphisms::factored_cata_jumping_debug_body;
 
 /// Debug extension trait for catamorphisms
 ///
 /// This trait provides debug-only catamorphism methods that may expose additional
 /// information useful for debugging and development.
 pub trait CatamorphismDebug<V> {
-    /// A debug-only version of [`cata_jumping_cached`](crate::morphisms::CatamorphismCached::cata_jumping_cached)
-    /// where the full absolute path is available to the closure.
+    /// A debug-only version of [`factored_cata_jumping`](crate::morphisms::CatamorphismCached::factored_cata_jumping)
+    /// where the full absolute path is available to `map_f`, `summarize_f` and `collapse_f` as a
+    /// trailing argument.
     ///
     /// Using data from the full path for your algorithm **will** lead to incorrect behavior.
     /// You must either adapt your algorithm not to require full path data or use one of the
     /// methods in [`crate::morphisms::CatamorphismSideEffecting`].
-    fn cata_jumping_cached_debug<W, AlgF>(&self, alg_f: AlgF) -> W
+    ///
+    fn factored_cata_jumping_debug<Acc, W, E, NewAccF, FoldChildF, MapF, SummarizeF, CollapseF>(
+        &self,
+        new_acc_f: NewAccF,
+        fold_child_f: FoldChildF,
+        map_f: MapF,
+        summarize_f: SummarizeF,
+        collapse_f: CollapseF,
+    ) -> Result<W, E>
     where
         W: Clone,
-        AlgF: Fn(&ByteMask, &mut [W], Option<&V>, &[u8], &[u8]) -> W,
-        Self: Sized,
-    {
-        self.cata_jumping_cached_fallible_debug(|mask, children, value, prefix, path| {
-            Ok::<_, core::convert::Infallible>(alg_f(mask, children, value, prefix, path))
-        })
-        .unwrap()
-    }
-
-    /// Fallible form of [`Self::cata_jumping_cached_debug`].
-    fn cata_jumping_cached_fallible_debug<W, E, AlgF>(&self, alg_f: AlgF) -> Result<W, E>
-        where
-            W: Clone,
-            AlgF: Fn(&ByteMask, &mut [W], Option<&V>, &[u8], &[u8]) -> Result<W, E>;
+        NewAccF: Copy + Fn(&ByteMask) -> Result<Acc, E>,
+        FoldChildF: Copy + Fn(&ByteMask, W, &mut Acc) -> Result<(), E>,
+        MapF: Copy + Fn(&V, &[u8], &[u8]) -> Result<W, E>,
+        SummarizeF: Copy + Fn(&ByteMask, Option<Acc>, &[u8], &[u8]) -> Result<W, E>,
+        CollapseF: Copy + Fn(&V, W, &[u8]) -> Result<W, E>;
 }
 
 impl<'a, Z, V: 'a> CatamorphismDebug<V> for Z where Z: Clone + Zipper + ZipperReadOnlyConditionalValues<'a, V> + ZipperConcrete + ZipperAbsolutePath + ZipperPathBuffer {
-    fn cata_jumping_cached_fallible_debug<W, E, AlgF>(&self, alg_f: AlgF) -> Result<W, E>
+    fn factored_cata_jumping_debug<Acc, W, E, NewAccF, FoldChildF, MapF, SummarizeF, CollapseF>(&self, new_acc_f: NewAccF, fold_child_f: FoldChildF, map_f: MapF, summarize_f: SummarizeF, collapse_f: CollapseF) -> Result<W, E>
     where
         W: Clone,
-        AlgF: Fn(&ByteMask, &mut [W], Option<&V>, &[u8], &[u8]) -> Result<W, E>
+        NewAccF: Copy + Fn(&ByteMask) -> Result<Acc, E>,
+        FoldChildF: Copy + Fn(&ByteMask, W, &mut Acc) -> Result<(), E>,
+        MapF: Copy + Fn(&V, &[u8], &[u8]) -> Result<W, E>,
+        SummarizeF: Copy + Fn(&ByteMask, Option<Acc>, &[u8], &[u8]) -> Result<W, E>,
+        CollapseF: Copy + Fn(&V, W, &[u8]) -> Result<W, E>,
     {
-        cata_jumping_cached_debug_body(self.clone(), alg_f)
+        factored_cata_jumping_debug_body(self.clone(), new_acc_f, fold_child_f, map_f, summarize_f, collapse_f)
     }
 }
 
 impl<V: 'static + Clone + Send + Sync + Unpin, A: Allocator + 'static> CatamorphismDebug<V> for PathMap<V, A> {
-    fn cata_jumping_cached_fallible_debug<W, E, AlgF>(&self, alg_f: AlgF) -> Result<W, E>
-        where
-            W: Clone,
-            AlgF: Fn(&ByteMask, &mut [W], Option<&V>, &[u8], &[u8]) -> Result<W, E>
+    fn factored_cata_jumping_debug<Acc, W, E, NewAccF, FoldChildF, MapF, SummarizeF, CollapseF>(&self, new_acc_f: NewAccF, fold_child_f: FoldChildF, map_f: MapF, summarize_f: SummarizeF, collapse_f: CollapseF) -> Result<W, E>
+    where
+        W: Clone,
+        NewAccF: Copy + Fn(&ByteMask) -> Result<Acc, E>,
+        FoldChildF: Copy + Fn(&ByteMask, W, &mut Acc) -> Result<(), E>,
+        MapF: Copy + Fn(&V, &[u8], &[u8]) -> Result<W, E>,
+        SummarizeF: Copy + Fn(&ByteMask, Option<Acc>, &[u8], &[u8]) -> Result<W, E>,
+        CollapseF: Copy + Fn(&V, W, &[u8]) -> Result<W, E>,
     {
-        self.read_zipper().cata_jumping_cached_fallible_debug(alg_f)
+        self.read_zipper().factored_cata_jumping_debug(new_acc_f, fold_child_f, map_f, summarize_f, collapse_f)
     }
 }
 
@@ -75,10 +83,22 @@ mod tests {
         zipper.descend_to(b"a");
         let paths = std::cell::RefCell::new(Vec::new());
 
-        let count = zipper.cata_jumping_cached_debug(|_mask, children: &mut [usize], value, _prefix, path| {
-            paths.borrow_mut().push(path.to_vec());
-            value.is_some() as usize + children.iter().sum::<usize>()
-        });
+        let count = zipper.factored_cata_jumping_debug::<usize, usize, core::convert::Infallible, _, _, _, _, _>(
+            |_| Ok(0),
+            |_mask, child, total| { *total += child; Ok(()) },
+            |_value, _prefix, path| {
+                paths.borrow_mut().push(path.to_vec());
+                Ok(1)
+            },
+            |_mask, total, _prefix, path| {
+                paths.borrow_mut().push(path.to_vec());
+                Ok(total.unwrap_or(0))
+            },
+            |_value, below, path| {
+                paths.borrow_mut().push(path.to_vec());
+                Ok(1 + below)
+            },
+        ).unwrap();
 
         assert_eq!(count, 3);
         assert!(paths.borrow().iter().all(|path| path.starts_with(b"a")));
@@ -95,10 +115,22 @@ mod tests {
         zipper.descend_to(b"a");
         let paths = std::cell::RefCell::new(Vec::new());
 
-        let count = zipper.cata_jumping_cached_debug(|_mask, children: &mut [usize], value, _prefix, path| {
-            paths.borrow_mut().push(path.to_vec());
-            value.is_some() as usize + children.iter().sum::<usize>()
-        });
+        let count = zipper.factored_cata_jumping_debug::<usize, usize, core::convert::Infallible, _, _, _, _, _>(
+            |_| Ok(0),
+            |_mask, child, total| { *total += child; Ok(()) },
+            |_value, _prefix, path| {
+                paths.borrow_mut().push(path.to_vec());
+                Ok(1)
+            },
+            |_mask, total, _prefix, path| {
+                paths.borrow_mut().push(path.to_vec());
+                Ok(total.unwrap_or(0))
+            },
+            |_value, below, path| {
+                paths.borrow_mut().push(path.to_vec());
+                Ok(1 + below)
+            },
+        ).unwrap();
 
         assert_eq!(count, 1);
         assert!(paths.borrow().iter().all(|path| path.starts_with(b"a")));
@@ -120,16 +152,34 @@ mod tests {
         drop(writer);
 
         let cached_calls = std::sync::atomic::AtomicUsize::new(0);
-        let cached = map.cata_jumping_cached(|_mask, children: &mut [usize], value, _prefix| {
-            cached_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            value.is_some() as usize + children.iter().sum::<usize>()
-        });
+        let cached = CatamorphismCached::factored_cata_jumping::<usize, usize, core::convert::Infallible, _, _, _, _, _, true>(&map,
+            |_| Ok(0),
+            |_mask, child, total| { *total += child; Ok(()) },
+            |_value, _prefix| {
+                cached_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(1)
+            },
+            |_mask, total, _prefix| {
+                cached_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(total.unwrap_or(0))
+            },
+            |_value, below| Ok(1 + below),
+        ).unwrap();
 
         let debug_calls = std::sync::atomic::AtomicUsize::new(0);
-        let debug = map.cata_jumping_cached_debug(|_mask, children: &mut [usize], value, _prefix, _path| {
-            debug_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            value.is_some() as usize + children.iter().sum::<usize>()
-        });
+        let debug = map.factored_cata_jumping_debug::<usize, usize, core::convert::Infallible, _, _, _, _, _>(
+            |_| Ok(0),
+            |_mask, child, total| { *total += child; Ok(()) },
+            |_value, _prefix, _path| {
+                debug_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(1)
+            },
+            |_mask, total, _prefix, _path| {
+                debug_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Ok(total.unwrap_or(0))
+            },
+            |_value, below, _path| Ok(1 + below),
+        ).unwrap();
 
         assert_eq!(cached, 4);
         assert_eq!(debug, cached);
