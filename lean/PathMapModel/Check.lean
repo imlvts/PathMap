@@ -243,6 +243,10 @@ hash of the node below it, and the hash at a position sees nothing above it. -/
 #guard Hash.hashU64 (mk [([0,0], 1)]) [] != Hash.hashU64 (mk [([0], 1), ([0,0], 1)]) []
 #guard Hash.hashU64 (mk [([0,0], 1)]) [] != Hash.hashU64 (PathMap.empty.addPath [0,0]) []
 
+-- The mask bitmap: byte `b` sets bit `b % 8` of byte `b / 8`.
+#guard Hash.maskBytes [0, 9, 255] == [1, 2] ++ List.replicate 29 0 ++ [128]
+#guard Hash.maskBytes [] == List.replicate 32 0
+
 -- Rendering matches `format!("{:016x}")`.
 #guard Hash.hex64 0 == "0000000000000000"
 #guard Hash.hex64 0xcbf29ce484222325 == "cbf29ce484222325"

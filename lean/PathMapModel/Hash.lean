@@ -24,6 +24,9 @@ are the few lines of FNV-1a below.  Every constant here mirrors that scheme:
 * `node mask children`    = FNV-1a over `'N'`, the 32-byte little-endian bitmap of `mask`, then
                             8 little-endian bytes of each child hash
 * `withValue vh below`    = FNV-1a over `'V'`, 8 bytes of `below`, then 8 bytes of `vh`
+
+`HashSecurity.lean` proves that this layering is sound for any primitive: two logically
+different tries that hash alike exhibit a collision of the primitive.
 -/
 
 namespace PathMapModel
@@ -42,20 +45,29 @@ def absorbBytes (h : UInt64) (bs : List UInt8) : UInt64 := bs.foldl absorb h
 
 /-- The 8 bytes of a `UInt64`, least significant first. -/
 def leBytes64 (x : UInt64) : List UInt8 :=
-  (List.range 8).map fun i => (x >>> (UInt64.ofNat (8 * i))).toUInt8
+  [x.toUInt8, (x >>> 8).toUInt8, (x >>> 16).toUInt8, (x >>> 24).toUInt8,
+   (x >>> 32).toUInt8, (x >>> 40).toUInt8, (x >>> 48).toUInt8, (x >>> 56).toUInt8]
+
+/-- A byte from its bits, least significant first: `digits [b0, b1, ..] = b0 + 2 * (b1 + 2 * ..)`. -/
+def digits : List Bool → Nat
+  | [] => 0
+  | b :: bs => b.toNat + 2 * digits bs
 
 /-- The 32-byte little-endian bitmap of a child mask: byte `i` holds bits `8i .. 8i+7`, so byte
 `b` of the mask sets bit `b % 8` of byte `b / 8`.  This is the in-memory layout of
 `pathmap::utils::ByteMask` (`[u64; 4]`) on a little-endian machine, which is what the crate
-absorbs. -/
+absorbs.  Written through `digits` so that `HashSecurity.lean` can show it is injective. -/
 def maskBytes (m : ByteMask) : List UInt8 :=
   (List.range 32).map fun i =>
-    m.foldl (fun acc b => if b.toNat / 8 == i then acc ||| UInt8.ofNat (1 <<< (b.toNat % 8)) else acc) 0
+    UInt8.ofNat (digits ((List.range 8).map fun j => m.contains (UInt8.ofNat (8 * i + j))))
 
 /-! ## The scheme (`Fnv1a64Scheme`) -/
 
+/-- The primitive: FNV-1a over a whole message. -/
+def fnv (msg : List UInt8) : UInt64 := absorbBytes fnvOffset msg
+
 /-- `HashScheme::value` for `u64`: what `<u64 as Hash>::hash` writes, little-endian. -/
-def value (v : UInt64) : UInt64 := absorbBytes fnvOffset (leBytes64 v)
+def value (v : UInt64) : UInt64 := fnv (leBytes64 v)
 
 /-- `HashScheme::start`, `child`, `finish` in one: a logical node with the given children, in
 the order given (callers pass them in ascending byte order). -/
@@ -77,9 +89,11 @@ def step (b : UInt8) (below : UInt64) : UInt64 := node [b] [below]
 
 /-- The hash of the subtrie at `p`, given `fuel` at least the depth of the trie below `p`.
 Fuel is a bound on recursion depth: with enough of it the result does not depend on it, and
-the trie is finite so `logicalHash` always supplies enough. -/
+the trie is finite so `logicalHash` always supplies enough.  Running out of fuel yields the
+hash of the empty message, which no node or value message can produce (see
+`HashSecurity.lean`), so an inadequate fuel can never be mistaken for a real hash. -/
 def hashFuel {V : Type} (vh : V → UInt64) (t : PathMap V) : Nat → Path → UInt64
-  | 0, _ => 0
+  | 0, _ => fnv []
   | fuel + 1, p =>
       let m := t.childMask p
       let below := node m (m.map fun b => hashFuel vh t fuel (p ++ [b]))

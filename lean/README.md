@@ -153,6 +153,7 @@ focus, such that ..." — instead of as a node walk.
 | `PathMapModel/Map.lean` | the `PathMap` surface, which is the zipper API applied at the root — plus `PathMap::restrict`, the one genuinely map-level operation |
 | `PathMapModel/Spec.lean` | §1 proved laws (the cursor algebra); §2 checkable laws (metamorphic properties) |
 | `PathMapModel/Hash.lean` | the logical trie hash (`CatamorphismCached::hash` under `Fnv1a64Scheme`), defined over the flat representation so node layout cannot enter |
+| `PathMapModel/HashSecurity.lean` | the scheme's collision reduction: two logically different tries that hash alike exhibit a collision of the primitive, for any primitive |
 | `PathMapModel/Check.lean` | `#guard`s: regression fixtures transcribed from `src/write_zipper.rs`'s own tests, and the §2 laws over a battery of tries |
 | `PathMapModel/Fuzz.lean` | the wire format, the operation table, and the trace producer (including `--act` mode) |
 | `Main.lean` | the `pathmap-oracle` binary |
@@ -597,6 +598,19 @@ mirrors.  `merkleize` itself is fixed to gxhash (a caller-supplied scheme with
 collisions would merge subtries that differ), so its op reports whether the hash
 it returns equals the map's hash under that scheme, which the model says is
 always `1`.
+
+`HashSecurity.lean` proves the scheme sound relative to its primitive: for any
+`H`, if two positions with different subtries (`LogicalEq` fails) have equal
+hashes, then two different messages collided under `H` (or two different values
+under the value hash), and the proof constructs them
+(`collision_of_hash_eq`; `hashWith_inj_imp_logicalEq` is the ideal-primitive
+form, `fnv_collision_of_hashU64_eq` the instance for the harness's maps).  The
+reduction rests on the messages being decodable, which is why both schemes tag
+node and value messages (`N`, `V`), absorb the mask as a fixed 32-byte bitmap
+whose popcount fixes how many fixed-width digests follow, and hash the empty
+message when fuel runs out.  It says nothing about the primitive: gxhash makes
+no collision-resistance claim, so this is a statement about the scheme, and the
+primitive is treated as replaceable.
 
 Four ops exercise it: `hash` (target zipper's focus, recursive engine),
 `hash_iter` (read zipper, zipper-driven engine, also on an ACT source),

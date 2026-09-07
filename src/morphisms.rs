@@ -390,24 +390,38 @@ pub mod trie_hash {
         v.hash(&mut hasher);
         hasher.finish_u128()
     }
+    /// Domain tag opening a logical node's message: `N`, then the 32 mask bytes, then the children
+    pub const NODE_TAG: u8 = b'N';
+    /// Domain tag opening a value's message: `V`, then the hash below, then the value hash
+    pub const VALUE_TAG: u8 = b'V';
+
     /// Starts the hash of a logical node from its child mask; the children's hashes are written next
+    ///
+    /// The message is `N`, the 32 bytes of the mask as a little-endian 256-bit bitmap, then 16
+    /// little-endian bytes per child.  The tag separates it from [`with_value`]'s message, and the
+    /// mask fixes how many children follow, so distinct (mask, children) never share a message.  See
+    /// `lean/PathMapModel/HashSecurity.lean` for the proof that a collision between two logically
+    /// different tries is therefore a collision of the primitive
     #[inline(always)]
     pub(crate) fn node_hasher(bm: &ByteMask) -> gxhash::GxHasher {
         let mut hasher = gxhash::GxHasher::with_seed(SEED);
+        hasher.write_u8(NODE_TAG);
         hasher.write(unsafe { slice_from_raw_parts(bm.0.as_ptr() as *const u8, 32).as_ref().unwrap_unchecked() });
         hasher
     }
-    /// Places a value's hash on top of the hash of the subtrie below it
+    /// Places a value's hash on top of the hash of the subtrie below it: the message is `V`, then the
+    /// 16 bytes of `below`, then the 16 bytes of `val_hash`
     #[inline(always)]
     pub(crate) fn with_value(val_hash: u128, below: u128) -> u128 {
         let mut hasher = gxhash::GxHasher::with_seed(SEED);
+        hasher.write_u8(VALUE_TAG);
         hasher.write_u128(below);
         hasher.write_u128(val_hash);
         hasher.finish_u128()
     }
 
-    /// The production scheme: gxhash over the mask bytes and the children's hashes, values hashed
-    /// through [`Hash`] with seed 0
+    /// The production scheme: gxhash over a tag, the mask bytes and the children's hashes (see
+    /// [`node_hasher`] and [`with_value`] for the messages), values hashed through [`Hash`] with seed 0
     #[derive(Clone, Copy, Default, Debug)]
     pub struct GxHashScheme;
 
@@ -493,7 +507,7 @@ pub mod trie_hash {
         #[inline]
         fn start(&self, mask: &ByteMask) -> Self::Acc {
             let mut h = Fnv1a64::new();
-            h.write(b"N");
+            h.write_u8(NODE_TAG);
             for word in mask.0 {
                 h.write(&word.to_le_bytes());
             }
@@ -512,7 +526,7 @@ pub mod trie_hash {
         #[inline]
         fn with_value(&self, val_hash: u128, below: u128) -> u128 {
             let mut h = Fnv1a64::new();
-            h.write(b"V");
+            h.write_u8(VALUE_TAG);
             h.write_u64(below as u64);
             h.write_u64(val_hash as u64);
             h.0 as u128
