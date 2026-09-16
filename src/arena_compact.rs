@@ -2307,9 +2307,11 @@ where Storage: AsRef<[u8]>
     cur_node: Node,
     stack: Vec<StackFrame>,
     path: Vec<u8>,
+    pub(crate) invalid: usize,
+    // origin_* fields are used to remember the position of zipper's root
     origin_depth: usize,
     origin_node_depth: usize,
-    pub invalid: usize,
+    origin_invalid: usize,
     _marker: PhantomData<Value>,
 }
 
@@ -2319,7 +2321,7 @@ where Storage: AsRef<[u8]>
     fn clone(&self) -> Self {
         let Self {
             tree, cur_node, stack, path,
-            origin_depth, origin_node_depth, invalid, ..
+            origin_depth, origin_node_depth, invalid, origin_invalid, ..
         } = self;
         Self {
             tree,
@@ -2329,6 +2331,7 @@ where Storage: AsRef<[u8]>
             origin_depth: *origin_depth,
             origin_node_depth: *origin_node_depth,
             invalid: *invalid,
+            origin_invalid: *origin_invalid,
             _marker: PhantomData,
         }
     }
@@ -2382,6 +2385,7 @@ where Storage: AsRef<[u8]>
             tree, cur_node,
             path: Vec::new(),
             invalid: 0,
+            origin_invalid: 0,
             origin_depth: 0,
             origin_node_depth: 0,
             stack: Vec::from([stack_frame]),
@@ -2391,6 +2395,7 @@ where Storage: AsRef<[u8]>
 
     fn with_root_here(mut self) -> Self {
         self.origin_depth = self.path.len();
+        self.origin_invalid = self.invalid;
         if self.stack.len() > 1 {
             let last = self.stack.len() - 1;
             self.stack.swap(0, last);
@@ -2678,15 +2683,16 @@ where Storage: AsRef<[u8]>
         }
         while let Some(top_frame) = self.stack.last_mut() {
             let mut nchildren = top_frame.child_count;
-            let mut this_steps = top_frame.node_depth
-                .min(self.path.len() - self.origin_depth);
-            top_frame.node_depth = 0;
-            if self.stack.len() > 1 {
+            // case: partway into the node
+            let remaining = self.path.len() - self.origin_depth;
+            let mut this_steps = top_frame.node_depth.min(remaining);
+            top_frame.node_depth -= this_steps;
+            if self.stack.len() > 1 && remaining > this_steps {
                 self.stack.pop();
                 let prev = self.stack.last().unwrap();
                 self.cur_node = self.tree.get_node(prev.node_id).0;
                 nchildren = prev.child_count;
-                    this_steps += 1;
+                this_steps += 1;
             }
             self.path.truncate(self.path.len() - this_steps);
             // eprintln!("path={:?}", self.path);
@@ -2921,9 +2927,10 @@ where Storage: AsRef<[u8]>
         let (cur_node, _) = self.tree.get_node(self.stack[0].node_id);
         self.cur_node = cur_node;
         self.stack.truncate(1);
+        // restore origin_* state
         self.stack[0].node_depth = self.origin_node_depth;
         self.path.truncate(self.origin_depth);
-        self.invalid = 0;
+        self.invalid = self.origin_invalid;
     }
 
     /// Returns the total number of values contained at and below the zipper's focus, including the focus itself
@@ -3206,72 +3213,47 @@ where Storage: AsRef<[u8]>
     /// See: [to_next_k_path](ZipperIteration::to_next_k_path)
     fn descend_first_k_path_observed<Obs: PathObserver>(&mut self, k: usize, obs: &mut Obs) -> bool {
         timed_span!(DescendFirstKPath, COUNTERS);
-        for ii in 0..k {
-            match self.descend_first_byte() {
-                Some(byte) => obs.descend_to_byte(byte),
-                None => {
-                    self.ascend(ii);
-                    obs.ascend(ii);
-                    return false;
-                }
-            }
-        }
-        return true;
-    }
-
-    /// Moves the zipper's focus to the next location with the same path length as the current focus,
-    /// following a depth-first exploration from a common root `k` steps above the current focus
-    ///
-    /// Returns `true` if the zipper has sucessfully moved to a new location at the same level, or `false`
-    /// if no further locations exist.  If this method returns `false` then the zipper will be ascended `k`
-    /// steps to the common root.  (The focus position when [descend_first_k_path](ZipperIteration::descend_first_k_path) was called)
-    ///
-    /// WARNING: This is not a constant-time operation, and may be as bad as `order n` with respect to the paths
-    /// below the zipper's focus.  Although a typical cost is `order log n` or better.
-    ///
-    /// See: [descend_first_k_path](ZipperIteration::descend_first_k_path)
-    fn to_next_k_path_observed<Obs: PathObserver>(&mut self, k: usize, obs: &mut Obs) -> bool {
-        timed_span!(ToNextKPath, COUNTERS);
-        let mut depth = k;
-        'outer: loop {
-            while depth > 0 && self.child_count() <= 1 {
-                if self.ascend(1) == 0 {
-                    break 'outer;
-                }
-                obs.ascend(1);
-                depth -= 1;
-            }
-            let stack = self.stack.last_mut().unwrap();
-            let idx = stack.child_index + 1;
-            if idx >= stack.child_count {
-                if depth == 0 {
-                    break 'outer;
-                }
-                if self.ascend(1) == 0 {
-                    break 'outer;
-                }
-                obs.ascend(1);
-                depth -= 1;
-                continue 'outer;
-            }
-            //The loops above already ascended, so this is a plain descent of one byte
-            match self.descend_indexed_byte(idx) {
-                Some(byte) => obs.descend_to_byte(byte),
-                None => unreachable!("idx was bounds-checked against child_count above"),
-            }
-            depth += 1;
-            for _ii in 0..k - depth {
-                match self.descend_first_byte() {
-                    Some(byte) => obs.descend_to_byte(byte),
-                    None => continue 'outer,
-                }
-                depth += 1;
-            }
+        if k == 0 {
             return true;
         }
-        self.ascend(depth);
-        obs.ascend(depth);
-        false
+        //This used to follow the first byte `k` times and give up if it ran out, which finds a
+        //path of length `k` only when the leftmost chain happens to be that long -- so a trie
+        //whose first branch is short reported "no such path" with plenty of them to the right.
+        //The doc above promises depth-first exploration, and that is what the caller needs: the
+        //depth-first-*first* location exactly `k` bytes below the focus.  So on a dead end, back
+        //up to the nearest ancestor with an unvisited sibling and carry on from there.
+        let mut depth = 0usize;
+        loop {
+            while depth < k {
+                match self.descend_first_byte() {
+                    Some(byte) => {
+                        obs.descend_to_byte(byte);
+                        depth += 1;
+                    },
+                    None => break,
+                }
+            }
+            if depth == k {
+                return true;
+            }
+            //Dead end above depth `k`.  Ascend to the nearest branch that has another way
+            //down; running out of those means there is no such path, and the focus is back
+            //where it started, which is what the doc promises on `false`.
+            loop {
+                if depth == 0 {
+                    return false;
+                }
+                if let Some(byte) = self.to_next_sibling_byte() {
+                    //A sibling step is one byte up and one byte down, as the observer sees it
+                    obs.ascend(1);
+                    obs.descend_to_byte(byte);
+                    break;
+                }
+                self.ascend_byte();
+                obs.ascend(1);
+                depth -= 1;
+            }
+        }
     }
 }
 
@@ -4094,5 +4076,119 @@ mod tests {
 
         assert_act_matches_map(&map, &tree);
         Ok(())
+    }
+
+    /// `ACTZipper::descend_first_k_path` followed the first byte `k` times and gave up
+    /// when that chain ran out, so it found a path of length `k` only when the leftmost
+    /// chain happened to be that long.  The trait promises a depth-first search for the
+    /// first location exactly `k` bytes below the focus, with the focus unmoved on
+    /// `false`.
+    #[test]
+    fn act_zipper_descend_first_k_path_backtracks() {
+        use crate::zipper::*;
+        let mut m = PathMap::<u64>::new();
+        m.insert(b"a", 1);       //the leftmost branch is one byte deep
+        m.insert(b"bxy", 2);     //this one reaches depth 3
+        m.insert(b"bxz", 3);
+        let t = ArenaCompactTree::from_zipper(m.read_zipper(), |&v| v);
+        for k in 1..=4 {
+            let mut az = t.read_zipper_u64();
+            let mut pz = m.read_zipper();
+            let a = az.descend_first_k_path(k);
+            let p = pz.descend_first_k_path(k);
+            assert_eq!(a, p, "k={k}");
+            assert_eq!(az.path(), pz.path(), "k={k}");
+            if a {
+                //The walk continues from what descend_first_k_path found
+                let mut az_paths = vec![az.path().to_vec()];
+                while az.to_next_k_path(k) { az_paths.push(az.path().to_vec()); }
+                let mut pz_paths = vec![pz.path().to_vec()];
+                while pz.to_next_k_path(k) { pz_paths.push(pz.path().to_vec()); }
+                assert_eq!(az_paths, pz_paths, "k={k}");
+            }
+        }
+        //From a focus below the root, and with no path of that length at all
+        let mut az = t.read_zipper_u64();
+        az.descend_to(b"b");
+        assert!(!az.descend_first_k_path(3));
+        assert_eq!(az.path(), b"b");
+        assert!(az.descend_first_k_path(2));
+        assert_eq!(az.path(), b"bxy");
+    }
+
+    /// `ascend_until` / `ascend_until_branch` zeroed the top frame's `node_depth` even when the
+    /// ascent stopped short at a zipper root that sits partway into a line node, so the frame
+    /// pointed at the start of the line while the path stayed at the root.  Every descent after
+    /// that read the line from its start and produced bytes that do not exist below the root.
+    #[test]
+    fn act_zipper_ascend_until_at_a_mid_line_root() {
+        use crate::zipper::*;
+        let mut m = PathMap::<u64>::new();
+        m.insert(b"", 100);
+        m.insert(b"\x00\x00", 235);
+        m.insert(b"\x01\x03\x02\x02", 71);
+        m.insert(b"\x03\x03", 135);
+        let t = ArenaCompactTree::from_zipper(m.read_zipper(), |&v| v);
+        //Rooted two bytes into the line under branch byte 01, so the root is mid-line
+        for root in [&b"\x01\x03\x02"[..], b"\x01\x03"] {
+            let mut az = t.read_zipper_at_path_u64(root);
+            let mut pz = m.read_zipper_at_path(root);
+            //At the root both are no-ops
+            assert_eq!(az.ascend_until_branch(), pz.ascend_until_branch());
+            assert_eq!(az.ascend_until(), pz.ascend_until());
+            assert_eq!(az.descend_first_byte(), pz.descend_first_byte(), "root {root:?}");
+            assert_eq!(az.path(), pz.path());
+            //From below the root, ascending stops at the root and the frame stays consistent
+            assert_eq!(az.descend_until(), pz.descend_until());
+            assert_eq!(az.path(), pz.path());
+            assert!(!az.at_root());
+            assert_eq!(az.ascend_until_branch(), pz.ascend_until_branch());
+            assert_eq!(az.path(), pz.path());
+            assert!(az.at_root());
+            assert_eq!(az.descend_first_byte(), pz.descend_first_byte());
+            assert_eq!(az.path(), pz.path());
+            assert_eq!(az.val(), pz.val());
+            az.reset(); pz.reset();
+            assert!(az.descend_first_k_path(1) == pz.descend_first_k_path(1));
+            assert_eq!(az.path(), pz.path());
+        }
+    }
+
+    /// A zipper can be rooted at a path that does not exist -- `fork_read_zipper` at an
+    /// off-trie focus makes one.  `reset` put the path back but cleared `invalid`
+    /// unconditionally, so the zipper came back believing it was rooted at its deepest
+    /// real ancestor and answered `val()` with that ancestor's value.
+    #[test]
+    fn act_zipper_reset_returns_to_an_off_trie_root() {
+        use crate::zipper::*;
+        let mut m = PathMap::<u64>::new();
+        { let mut w = m.write_zipper(); w.set_val(38); }
+        m.insert(&[1u8, 0, 2], 22);
+        m.insert(&[1u8, 1], 72);
+        let t = ArenaCompactTree::from_zipper(m.read_zipper(), |&v| v);
+
+        for root in [&[1u8, 1, 3][..], &[9u8], &[1u8, 0, 2, 5, 5]] {
+            let mut az = t.read_zipper_u64();
+            az.descend_to(root);
+            assert!(!az.path_exists(), "{root:?}");
+            let mut fork = az.fork_read_zipper();
+            assert!(!fork.path_exists(), "{root:?}");
+            assert_eq!(fork.val(), None, "{root:?}");
+            fork.reset();
+            assert!(fork.at_root(), "{root:?}");
+            assert!(!fork.path_exists(), "{root:?} after reset");
+            assert_eq!(fork.val(), None, "{root:?} after reset");
+            assert_eq!(fork.val_count(), 0, "{root:?} after reset");
+            assert_eq!(fork.child_count(), 0, "{root:?} after reset");
+            assert!(!fork.to_next_val(), "{root:?} after reset");
+        }
+
+        //The same through a zipper created at an off-trie path
+        let mut az = t.read_zipper_at_path_u64(&[1u8, 1, 3]);
+        assert_eq!(az.val(), None);
+        az.descend_to(&[0u8]);
+        az.reset();
+        assert_eq!(az.val(), None);
+        assert!(!az.path_exists());
     }
 }
