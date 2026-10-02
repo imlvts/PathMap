@@ -9,9 +9,11 @@
 //! cargo run --release -p differential --bin alg_bug_repros
 //! ```
 //!
-//! Exit status is 1 while any of them still reproduces.
+//! Exit status is 1 while any of them still reproduces.  Case 8 is a
+//! disagreement rather than a defect and never counts as a failure.
 
 use pathmap::PathMap;
+use pathmap::fuse::FuseExpr;
 use pathmap::zipper::{ZipperMoving, ZipperValues, ZipperWriting};
 
 /// A trie holding only dangling paths: structure written with `create_path`
@@ -177,7 +179,73 @@ fn main() {
         );
     }
 
-    println!("\n{} of 6 still reproduce", r.failed);
+    // ---------------------------------------------------------------- 6
+    // Finding 6 has no standalone reproducer: it is three `debug_assert!`s
+    // inside the merge primitives, so there is nothing to compare and nothing
+    // to print -- the assertion either fires or it does not.  Build with
+    // `-C debug-assertions=yes` and replay the three `panic-eval-*` inputs in
+    // `algebraic-corpus/`.  Case 7 below is its visible consequence.
+    println!(
+        "\n6. join reporting an empty result from non-empty nodes\n            => debug-assertions only; replay algebraic-corpus/panic-eval-*.bin"
+    );
+
+    // ---------------------------------------------------------------- 7
+    // Finding 4 again, reached without cloning anything, and with a visible
+    // consequence.  `fuse`'s `Xor` is `(l \ r) | (r \ l)`.  With `c` holding no
+    // values at all and `a` holding one, `c \ a` comes out as dangling-only
+    // structure and `a \ c` keeps the value -- so the join at the end is
+    // exactly the shape of finding 4, and it loses the value.
+    //
+    // Worth having separately because every PathMap-level spelling of the same
+    // thing keeps it: `a - c`, `(c | a) - (c & a)` and `(c - a) | (a - c)` are
+    // all correct here.  Only the node-level composition loses it, and
+    // `join_into_dyn` reports `AlgebraicStatus::Element` while doing so, so a
+    // caller cannot detect it from the status either.
+    {
+        let mut a = dangling(&[&[0, 0, 0, 0, 0]]);
+        a.write_zipper_at_path(&[0]).set_val(1);
+        let c = dangling(&[&[1]]);
+
+        let (prog, out) = FuseExpr::xor(FuseExpr::leaf(0), FuseExpr::leaf(1)).compile();
+        let fused = prog.eval(&[&c, &a], &[out]).pop().unwrap();
+
+        let eager = c.join(&a).subtract(&c.meet(&a));
+        r.case(
+            "7",
+            "fuse Xor loses a value only one operand has, at [0]",
+            format!("Some(1), as (c|a)-(c&a) gives {:?}", val_at(&eager, &[0])),
+            format!("{:?}", val_at(&fused, &[0])),
+        );
+    }
+
+    // ---------------------------------------------------------------- 8
+    // Not a defect, a disagreement: two conventions for what symmetric
+    // difference does to a coincident path carrying *different* values.
+    //
+    // `zipper_sym_diff`'s value policy cancels it -- for `u64`, `pjoin` and
+    // `pmeet` are both `Identity`, so `SymDiff::combine_impl` reaches `join ==
+    // meet` and yields nothing.  `(a | b) - (a & b)`, the definition its own
+    // documentation gives, agrees.  `fuse`'s `Xor` is `(l \ r) | (r \ l)`,
+    // which for `u64` keeps the left value, because `psubtract` is a no-op on
+    // differing values.
+    //
+    // Classically the two definitions are equal.  They are not equal over this
+    // value lattice, and nothing in the crate says which one is meant.
+    {
+        let c = with_val(&[], 2);
+        let a = with_val(&[], 1);
+
+        let (prog, out) = FuseExpr::xor(FuseExpr::leaf(0), FuseExpr::leaf(1)).compile();
+        let fused = prog.eval(&[&c, &a], &[out]).pop().unwrap();
+        let by_definition = c.join(&a).subtract(&c.meet(&a));
+
+        println!("\n8. symmetric difference of {{_:2}} and {{_:1}}: two conventions");
+        println!("   (c|a)-(c&a) root value: {:?}  (cancels)", val_at(&by_definition, &[]));
+        println!("   fuse Xor    root value: {:?}  (keeps the left)", val_at(&fused, &[]));
+        println!("   => not counted as a failure; the crate has not chosen");
+    }
+
+    println!("\n{} of 7 still reproduce", r.failed);
     if r.failed > 0 {
         std::process::exit(1);
     }

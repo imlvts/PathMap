@@ -10,9 +10,10 @@
 //! evaluated by every route in `routes.rs` that applies to it -- eagerly on
 //! whole maps, in place through a write zipper, as a lockstep traversal of two
 //! read zippers, as a single n-ary traversal, through the DNF engine, through a
-//! lazy `OverlayZipper` over a virtual trie, and over a flat `BTreeMap` with no
-//! trie at all.  Then `laws.rs` evaluates pairs of expressions that must agree
-//! whatever the operands, which catches the mistakes every route shares.
+//! lazy `OverlayZipper` over a virtual trie, as a `pathmap::fuse` program over
+//! trie nodes below the zipper layer, and over a flat `BTreeMap` with no trie at
+//! all.  Then `laws.rs` evaluates pairs of expressions that must agree whatever
+//! the operands, which catches the mistakes every route shares.
 //!
 //! No Lean build is needed and there is no oracle: a divergence says the
 //! implementations disagree, not which one is wrong.
@@ -329,6 +330,15 @@ pub fn check(case: &Case) -> Vec<Divergence> {
         .expect("the pointwise route applies to every expression");
     let base_name = baseline_route.name(&case.expr);
 
+    // The model is computed up front so every divergence can say which side it
+    // backs.  Worth the one extra evaluation: the baseline is `PathMap::join`
+    // and friends, which have defects of their own, so "route X disagrees with
+    // the baseline" on its own points at the wrong file about as often as the
+    // right one.  The model has no trie and no node layout, so when it sides
+    // with the route, the baseline is where to look.
+    let model = routes::eval(Route::Model, &case.expr, &case.operands)
+        .expect("the model route applies to every expression");
+
     for route in Route::all() {
         if route == baseline_route {
             continue;
@@ -341,12 +351,13 @@ pub fn check(case: &Case) -> Vec<Divergence> {
                 class: Class::Values,
                 signature: format!("values:{}", route_key(route)),
                 detail: format!(
-                    "{} vs {name} evaluating {}: {}\n  {base_name}: {}\n  {name}: {}",
+                    "{} vs {name} evaluating {}: {}\n  {base_name}: {}\n  {name}: {}\n  {}",
                     base_name,
                     case.expr,
                     shape::first_values_diff(&baseline.values, &got.values).unwrap_or_default(),
                     shape::show_values(&baseline.values),
                     shape::show_values(&got.values),
+                    model_sides_with(&model.values, &baseline.values, &got.values, &base_name, &name),
                 ),
             });
             // One class per route is enough; a value divergence will usually
@@ -435,6 +446,31 @@ pub fn check_laws(case: &Case) -> Vec<Divergence> {
     out
 }
 
+/// Which side of a value divergence the reference model backs, as one line for
+/// the report.
+///
+/// Neither side being backed is the interesting case: it means the model
+/// disagrees with both, so the defect is unlikely to be in either route's
+/// traversal and is more likely in a shared primitive -- or in the model, which
+/// is worth suspecting too.
+fn model_sides_with(
+    model: &Values,
+    baseline: &Values,
+    got: &Values,
+    base_name: &str,
+    name: &str,
+) -> String {
+    match (model == baseline, model == got) {
+        (true, true) => "model: agrees with both (unreachable)".to_string(),
+        (true, false) => format!("model: sides with {base_name}, so {name} is the odd one out"),
+        (false, true) => format!("model: sides with {name}, so {base_name} is the odd one out"),
+        (false, false) => format!(
+            "model: agrees with neither -- {}",
+            shape::show_values(model)
+        ),
+    }
+}
+
 fn route_key(r: Route) -> String {
     match r {
         Route::Pointwise(k) => format!("pw{k}"),
@@ -506,6 +542,11 @@ const MERKLEIZE: &str = "merkleize panics on dangling-only structure (repro 5)";
 /// Re-nesting a join moves which operand is on the left *and* which pair of
 /// tries meets a shared node first, so both cause 1 and cause 2 reach these.
 const BIAS_OR_LOSS: &str = "value bias or lost value (repros 3, 4)";
+/// `fuse`'s `Xor` is `(l \ r) | (r \ l)`, and both of its disagreements with the
+/// rest of the algebra live under the same signatures: cause 2 reaches the join
+/// at the end of that construction, and the convention for a coincident path
+/// carrying differing values is not the one `zipper_sym_diff` uses.
+const FUSE_XOR: &str = "fuse Xor: cause 2, plus an unchosen convention (repros 7, 8)";
 
 pub const KNOWN: &[Known] = &[
     // Routes disagreeing with the baseline: `join_into` and `meet_2` losing
@@ -540,7 +581,10 @@ pub const KNOWN: &[Known] = &[
     Known { signature: "law:join-distributes-over-meet", cause: BIAS },
     Known { signature: "law:meet-distributes-over-join", cause: BIAS },
     Known { signature: "law:absorb-join-meet", cause: BIAS },
-    Known { signature: "law:absorb-meet-join", cause: BIAS },
+    // `law:absorb-meet-join` is deliberately absent: it has never fired, across
+    // several million cases in both build profiles.  An entry for something
+    // unobserved would excuse it in advance, and `a & (a | b) == a` failing
+    // would be worth looking at rather than waving through.
     Known { signature: "law:sym-diff-is-join-minus-meet", cause: BIAS },
     // Join associativity again, with meets for leaves.  Reached by cause 2:
     // `a & b` over an all-dangling `b` is a dangling-only trie, and joining
@@ -567,6 +611,13 @@ pub const KNOWN: &[Known] = &[
     // time.  Three assertion sites, one story: join's "the result is empty"
     // path is reachable from nodes that are not empty.
     Known { signature: "panic:eval:line_list_node.rs:2720", cause: LOSS },
+    // The `fuse` routes agree with everything else on join, meet and subtract;
+    // only symmetric difference is out of step.  Verified by disabling `SymDiff`
+    // in the generator, which makes both `fuse` signatures disappear entirely.
+    Known { signature: "values:fuse", cause: FUSE_XOR },
+    Known { signature: "shape:fuse", cause: FUSE_XOR },
+    Known { signature: "values:fuse_distributed", cause: FUSE_XOR },
+    Known { signature: "shape:fuse_distributed", cause: FUSE_XOR },
 ];
 
 pub fn known(signature: &str) -> Option<&'static Known> {
