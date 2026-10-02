@@ -9,8 +9,8 @@
 //! cargo run --release -p differential --bin alg_bug_repros
 //! ```
 //!
-//! Exit status is 1 while any of them still reproduces.  Case 8 is a
-//! disagreement rather than a defect and never counts as a failure.
+//! Exit status is 1 while any of them still reproduces.  Case 8 is a property of
+//! the value type rather than a defect and never counts as a failure.
 
 use pathmap::PathMap;
 use pathmap::fuse::FuseExpr;
@@ -219,18 +219,21 @@ fn main() {
     }
 
     // ---------------------------------------------------------------- 8
-    // Not a defect, a disagreement: two conventions for what symmetric
-    // difference does to a coincident path carrying *different* values.
+    // Not a defect in either operation: a symptom of the *value type*.
     //
-    // `zipper_sym_diff`'s value policy cancels it -- for `u64`, `pjoin` and
-    // `pmeet` are both `Identity`, so `SymDiff::combine_impl` reaches `join ==
-    // meet` and yields nothing.  `(a | b) - (a & b)`, the definition its own
-    // documentation gives, agrees.  `fuse`'s `Xor` is `(l \ r) | (r \ l)`,
-    // which for `u64` keeps the left value, because `psubtract` is a no-op on
-    // differing values.
+    // `(a | b) \ (a & b)` and `(a \ b) | (b \ a)` are equal in any distributive
+    // lattice with a relative complement, so symmetric difference is not
+    // ambiguous and there is no convention to choose.  They come apart for
+    // `u64` because `u64`'s `Lattice` impl is not a lattice: `pjoin` is
+    // `left_biased_pjoin` and `pmeet` is `Identity(SELF_IDENT)`, so both are
+    // "return the left operand" and `a | b == a & b` for every pair -- which in
+    // a lattice would force `a == b`.  With the two collapsed into one function
+    // the first formula becomes `a \ a` and vanishes, while the second stays `a`.
     //
-    // Classically the two definitions are equal.  They are not equal over this
-    // value lattice, and nothing in the crate says which one is meant.
+    // `zipper_sym_diff` follows the first; `fuse`'s `Xor` follows the second.
+    // Both are right, and the premise is wrong.  `bin/alg_lattice_check.rs`
+    // prints the same comparison for `bool`, a real Boolean algebra, where all
+    // four inputs agree.
     {
         let c = with_val(&[], 2);
         let a = with_val(&[], 1);
@@ -239,10 +242,11 @@ fn main() {
         let fused = prog.eval(&[&c, &a], &[out]).pop().unwrap();
         let by_definition = c.join(&a).subtract(&c.meet(&a));
 
-        println!("\n8. symmetric difference of {{_:2}} and {{_:1}}: two conventions");
+        println!("\n8. symmetric difference of {{_:2}} and {{_:1}}: u64 is not a lattice");
         println!("   (c|a)-(c&a) root value: {:?}  (cancels)", val_at(&by_definition, &[]));
         println!("   fuse Xor    root value: {:?}  (keeps the left)", val_at(&fused, &[]));
-        println!("   => not counted as a failure; the crate has not chosen");
+        println!("   => both formulas are correct; u64's pjoin == pmeet makes them differ");
+        println!("      see bin/alg_lattice_check, where bool agrees on all inputs");
     }
 
     println!("\n{} of 7 still reproduce", r.failed);

@@ -61,6 +61,30 @@ pub const MAX_PATH_LEN: usize = 5;
 /// the value-combining paths at all.
 pub const VALUES: u64 = 3;
 
+/// `u64`'s lattice instances are degenerate, and that bounds what this fuzzer
+/// can see.
+///
+/// `pjoin` is `left_biased_pjoin`, `pmeet` is `Identity(SELF_IDENT)`: both
+/// return the left operand, so `a | b == a & b` for every pair and the impl is
+/// not a lattice at all (it is marked `//GOAT trash` in `pathmap::ring`).  Two
+/// consequences, both of them limits on this harness rather than on the crate:
+///
+/// 1. Neither `pjoin` nor `pmeet` can return `AlgebraicResult::Element` -- every
+///    arm is `Identity`.  So the paths that handle *a combined value that is a
+///    new value*, and have to store it, are never reached.  That is a large
+///    part of what the algebra does, and this fuzzer does not currently test it.
+///
+/// 2. Several laws in `laws.rs` are checked on paths rather than values, and
+///    several more are listed there as "not laws".  Both are artefacts of this
+///    value type, not facts about the algebra; under a real lattice they are
+///    ordinary value-level laws.
+///
+/// `pathmap::utils::ByteMask` already implements `Lattice` and
+/// `DistributiveLattice` properly, by delegating to bitwise operations on
+/// `[u64; 4]`, and would lift both limits.  Doing that means making this module
+/// generic over the value type, which it is not yet.
+pub const VALUE_TYPE_IS_DEGENERATE: () = ();
+
 /// Byte decoding with the out-of-input behaviour this fuzzer wants.
 ///
 /// `harness::Dec` returns `None` when the input runs out, because the Lean
@@ -542,11 +566,26 @@ const MERKLEIZE: &str = "merkleize panics on dangling-only structure (repro 5)";
 /// Re-nesting a join moves which operand is on the left *and* which pair of
 /// tries meets a shared node first, so both cause 1 and cause 2 reach these.
 const BIAS_OR_LOSS: &str = "value bias or lost value (repros 3, 4)";
-/// `fuse`'s `Xor` is `(l \ r) | (r \ l)`, and both of its disagreements with the
-/// rest of the algebra live under the same signatures: cause 2 reaches the join
-/// at the end of that construction, and the convention for a coincident path
-/// carrying differing values is not the one `zipper_sym_diff` uses.
-const FUSE_XOR: &str = "fuse Xor: cause 2, plus an unchosen convention (repros 7, 8)";
+/// `fuse`'s `Xor` is `(l \ r) | (r \ l)`.  Two things reach it, and both land
+/// under the same signatures.
+///
+/// The first is cause 2, at the join on the end of that construction.
+///
+/// The second is **not** a disagreement about what symmetric difference means --
+/// an earlier version of this comment said it was, and that was wrong.
+/// `(a | b) \ (a & b)` and `(a \ b) | (b \ a)` are equal in any distributive
+/// lattice with a relative complement, so there is nothing to choose between.
+/// They come apart here because `u64`'s `Lattice` impl **is not a lattice**:
+/// `pjoin` is `left_biased_pjoin` and `pmeet` is `Identity(SELF_IDENT)`, so both
+/// are the function "return the left operand" and `a | b == a & b` for every
+/// pair.  In a lattice `a & b == a | b` forces `a == b`, so the impl asserts
+/// `1 == 2`.  With join and meet collapsed into one function the first formula
+/// becomes `a \ a`, which is bottom, while the second stays `a`.
+///
+/// `bool` in the same file is a genuine two-element Boolean algebra and the two
+/// formulas agree on all four of its inputs.  `bin/alg_lattice_check.rs` prints
+/// both tables.  See `ALGEBRAIC_FUZZING.md` for what this costs the fuzzer.
+const FUSE_XOR: &str = "fuse Xor: cause 2, plus u64's Lattice impl not being a lattice (repros 7, 8)";
 
 pub const KNOWN: &[Known] = &[
     // Routes disagreeing with the baseline: `join_into` and `meet_2` losing

@@ -10,29 +10,45 @@
 //! machinery, which keeps this file declarative and means a law automatically
 //! inherits whatever the expression evaluator can do.
 //!
-//! # Why some laws are checked on paths only
+//! # Why some laws are weakened here, and why that is the value type's fault
 //!
-//! `u64`'s lattice instances are left-biased: `pjoin` keeps the left value when
-//! the two differ, and `pmeet` keeps the left value *unconditionally*.  Several
-//! textbook identities therefore hold as statements about which paths survive
-//! but not about which value lands on them, and asserting values there would
-//! report a divergence that is correct behaviour.  Each such law says so.
+//! `u64`'s lattice instances are degenerate.  `pjoin` is `left_biased_pjoin`
+//! and `pmeet` is `Identity(SELF_IDENT)`: both return the left operand, so
+//! `a | b == a & b` for every pair.  In a lattice `a & b == a | b` forces
+//! `a == b`, so the impl asserts `1 == 2` and is not a lattice -- `pathmap::ring`
+//! marks it `//GOAT trash`.
 //!
-//! # Identities deliberately absent
+//! Everything below that looks like a weakened law follows from that, and from
+//! nothing deeper.  The lattice identities themselves are not in doubt:
 //!
-//! Three plausible-looking ones are not laws under these value semantics, and
-//! are listed here so nobody adds them back as "obviously true":
+//! * The laws marked [`Level::Paths`] would be ordinary value-level laws under a
+//!   real lattice.  They are weakened because with both operations returning the
+//!   left operand, swapping the operands swaps the result's value, so
+//!   commutativity cannot hold on values here.
 //!
-//! * `a - (b | c) == (a - b) & (a - c)`.  `b | c` carries `b`'s value where
-//!   both are present, so the left side keeps a path whose value matches `c`
-//!   but not `b`, while the right side drops it.
-//! * `a - b == a - (a & b)`.  `a & b` carries *`a`'s* value, so the right side
-//!   drops every shared path regardless of value, while the left side drops
-//!   only the ones whose values are equal.
-//! * `(a ^ b) ^ c == a ^ (b ^ c)` on values.  A path present in all three
-//!   cancels in the inner operation either way, so the left side ends up with
-//!   `c`'s value and the right side with `a`'s.  Associative on paths, which is
-//!   what is checked.
+//! * The three identities listed below as "not laws" **are** laws in any
+//!   distributive lattice.  They fail only because join and meet have collapsed
+//!   into one function and `psubtract` is `None` exactly on equality.
+//!
+//! So this list is a record of what `u64` costs, not of anything the algebra
+//! does wrong.  `bin/alg_lattice_check.rs` prints the tables, and
+//! `../../ALGEBRAIC_FUZZING.md` explains what it costs in coverage -- chiefly
+//! that `AlgebraicResult::Element` is unreachable from `u64`'s `pjoin` and
+//! `pmeet`, so the code that stores a genuinely *combined* value never runs.
+//!
+//! # Identities absent for that reason
+//!
+//! Listed so nobody adds them back without also changing the value type:
+//!
+//! * `a - (b | c) == (a - b) & (a - c)`.  `b | c` carries `b`'s value where both
+//!   are present, so the left side keeps a path whose value matches `c` but not
+//!   `b`, while the right side drops it.
+//! * `a - b == a - (a & b)`.  `a & b` carries *`a`'s* value -- because `pmeet`
+//!   ignores its argument -- so the right side drops every shared path
+//!   regardless of value, while the left side drops only the equal ones.
+//! * `(a ^ b) ^ c == a ^ (b ^ c)` on values.  A path in all three cancels in the
+//!   inner operation either way, leaving `c`'s value on the left and `a`'s on
+//!   the right.  Checked on paths, where it does hold.
 
 use super::expr::{Expr, Op};
 
@@ -87,12 +103,13 @@ pub fn laws() -> Vec<Law> {
         Law { name: "meet-idempotent", lhs: m(v(a), v(a)), rhs: v(a), level: Values },
         Law { name: "join-unit", lhs: j(v(a), v(e)), rhs: v(a), level: Values },
         Law { name: "meet-zero", lhs: m(v(a), v(e)), rhs: v(e), level: Values },
-        // Commutative in path set only: the left value wins in both `pjoin` and
-        // `pmeet`, so swapping the operands swaps which value lands.
+        // Path set only: both `pjoin` and `pmeet` return the left operand, so
+        // swapping the operands swaps which value lands.  A real lattice would
+        // make these value-level laws; see the module comment.
         Law { name: "join-commutative", lhs: j(v(a), v(b)), rhs: j(v(b), v(a)), level: Paths },
         Law { name: "meet-commutative", lhs: m(v(a), v(b)), rhs: m(v(b), v(a)), level: Paths },
-        // Associativity *does* hold on values: left bias makes both nestings
-        // select the leftmost present operand's value.
+        // Associativity does hold on values even here: both nestings select the
+        // leftmost present operand's value.
         Law {
             name: "join-associative",
             lhs: j(j(v(a), v(b)), v(c)),

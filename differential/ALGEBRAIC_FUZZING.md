@@ -122,19 +122,37 @@ baseline in an interesting way — the baseline is what everyone is compared
 against. `meet-distributes-over-join` has no baseline to be fooled by: it puts
 the operands on different sides of a meet and notices.
 
-### The value semantics are not set semantics
+### `u64` is not a lattice, and that bounds what this fuzzer can see
 
-Three laws are checked on path presence only, and three plausible ones are
-deliberately absent. Both follow from `u64`'s lattice instances in
-`pathmap::ring`, which are left-biased: `pjoin` keeps the left value where the
-two differ, and `pmeet` keeps the left value *unconditionally*. So join and
-meet are not commutative in the value they produce, only in their path set.
-`laws.rs` documents each case, including the identities that look true and are
-not.
+The value type is `u64`, and `u64`'s instances in `pathmap::ring` are marked
+`//GOAT trash` for good reason. `pjoin` is `left_biased_pjoin`, `pmeet` is
+`Identity(SELF_IDENT)` — **both are the function "return the left operand"**, so
+`a | b == a & b` for every pair. In a lattice `a & b == a | b` forces `a == b`,
+so the impl effectively asserts `1 == 2`. `bin/alg_lattice_check` prints the
+table, next to `bool`, which is a genuine two-element Boolean algebra.
 
-Getting this wrong is the main way to write a harness that reports its own
-mistakes as crate defects, and it happened twice while this one was being
-built — see "Harness invariants" below.
+Two consequences, and they are limits on this harness rather than on the crate:
+
+1. **`AlgebraicResult::Element` is unreachable** from `u64`'s `pjoin` and
+   `pmeet`: every arm returns `Identity`. So the code that handles *a combined
+   value that is a new value* — allocating it, storing it, propagating it — never
+   runs. That is a large part of what the algebra does, and this fuzzer does not
+   currently reach it.
+
+2. **Several laws are weaker than they should be.** The three checked on paths
+   only would be value-level laws under a real lattice, and the three `laws.rs`
+   lists as "not laws" *are* laws in any distributive lattice. Both lists are a
+   record of what `u64` costs, not of anything the algebra does wrong.
+
+`pathmap::utils::ByteMask` already implements both traits properly by delegating
+to bitwise operations on `[u64; 4]`, so it would lift both limits. Using it means
+making the harness generic over the value type, which it is not yet — the single
+most valuable thing to do to this fuzzer next.
+
+Distinguishing a real finding from an artefact of this is the main way to write a
+harness that reports its own mistakes as crate defects. It happened three times
+while this one was being built — twice in the shape recognisers (see "Harness
+invariants") and once in the write-up of finding 8.
 
 ## Generated operands
 
@@ -252,14 +270,17 @@ signature onto one of them.
    `join_into_dyn` returns `AlgebraicStatus::Element` while doing so, so a caller
    cannot detect it from the status.
 
-**And one disagreement rather than a defect.** `zipper_sym_diff` cancels a
-coincident path carrying *different* values — for `u64`, `pjoin` and `pmeet` are
-both `Identity`, so `SymDiff::combine_impl` reaches `join == meet` and yields
-nothing — and `(a | b) - (a & b)`, the definition its own documentation gives,
-agrees. `fuse`'s `Xor` keeps the left value, because `psubtract` is a no-op on
-differing values. Classically the two definitions are equal; over this value
-lattice they are not, and nothing in the crate says which is meant. It is
-reported, counted, and not called a bug.
+**And one that is not a defect at all.** `zipper_sym_diff` cancels a coincident
+path carrying *different* values; `fuse`'s `Xor` keeps the left value. It is
+tempting to call that two conventions for symmetric difference, and an earlier
+version of this document did. That was wrong: `(a | b) - (a & b)` and
+`(a - b) | (b - a)` are equal in any distributive lattice with a relative
+complement, so there is nothing to choose between them. They come apart only
+because `u64` is not a lattice — with `pjoin` and `pmeet` collapsed into one
+function, the first formula becomes `a - a` and vanishes while the second stays
+`a`. Both implementations are right and the premise was wrong. See "`u64` is not
+a lattice" above; `bin/alg_lattice_check` shows `bool` agreeing on all four
+inputs. Reported, counted, and not a bug.
 
 ### Reading a report
 
@@ -338,6 +359,7 @@ disagrees with the rest, suspect the route first.
 | `src/algebraic/shape.rs` | what "the same result" means |
 | `src/bin/alg_fuzz.rs` | the driver: generation, replay, shrinking, reporting |
 | `src/bin/alg_bug_repros.rs` | the findings as plain `pathmap` calls |
+| `src/bin/alg_lattice_check.rs` | whether a divergence is the crate's fault or `u64`'s |
 | `tests/algebraic.rs` | the corpus gate and the harness invariants |
 | `algebraic-corpus/` | one minimised input per signature |
 
