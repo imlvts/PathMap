@@ -122,10 +122,10 @@ baseline in an interesting way — the baseline is what everyone is compared
 against. `meet-distributes-over-join` has no baseline to be fooled by: it puts
 the operands on different sides of a meet and notices.
 
-### Two value types, and the difference between them is a measurement
+### Three value types, and the difference between them is a measurement
 
-Every case runs twice, once per value type, and signatures are prefixed with the
-type (`u64:values:pw1`, `bits:law:join-associative`). That is the fuzzer's main
+Every case runs once per value type, and signatures are prefixed with the type
+(`u64:values:pw1`, `bits:law:join-associative`). That is the fuzzer's main
 discriminator:
 
 * **`bits`** is a 64-bit set under `|`, `&` and `& !`, with an empty result
@@ -135,6 +135,18 @@ discriminator:
   `src/algebraic/value.rs` rather than in `pathmap`, because a value type defined
   outside the crate is what a real caller has.
 
+* **`unit`** is `PathMap<()>`: the set case, also lawful, since `Option<()>` is
+  the two-element Boolean algebra. It earns its own slot for a reason neither of
+  the others covers: `()`'s `pjoin` and `pmeet` return
+  `Identity(SELF_IDENT | COUNTER_IDENT)` — *both* identity bits — on every single
+  combination, where `u64` and `bits` do so only for equal values. That saturates
+  the "either operand will do" path the node code uses to decide it can hand back
+  an operand unchanged and keep sharing it, which is precisely the machinery
+  findings 4 and 6 are about. It is also what `unit-value-optimizations` and
+  `unit-size` are about; neither is on `master`, so today this covers the generic
+  path, and if they land it is the only thing covering the specialised one.
+  Nothing in `zipper_algebra.rs` tests `()` at all — every test there uses `u64`.
+
 * **`u64`** is what the rest of this crate's fuzzing uses, and its instances in
   `pathmap::ring` are **not a lattice**: `pjoin` is `left_biased_pjoin`, `pmeet`
   is `Identity(SELF_IDENT)` — both return the left operand, so `a | b == a & b`
@@ -142,8 +154,7 @@ discriminator:
   what callers use today, and because it reaches `Identity`-heavy paths that the
   lawful type does not.
 
-A finding under `u64` alone is an artefact. One under both — or under `bits`
-alone — is a defect. `alg_fuzz` prints the split at the end of every run:
+A finding under `u64` alone is an artefact. One under a lawful type is a defect. `alg_fuzz` prints the split at the end of every run:
 
 ```
 by value type -- bits is lawful, u64 is not:
@@ -199,8 +210,17 @@ Four identities are checked **only** for a lawful value type, in
 `laws::lawful_only` — De Morgan for relative complement both ways,
 `a - b == a - (a & b)`, and symmetric difference being associative on *values*
 rather than only on paths. Each fails for `u64`, for the same reason everything
-else does. **All four hold.** They are the strongest laws the harness has; if one
-starts firing, that is news.
+else does.
+
+**Three of the four hold** across several million cases in both profiles:
+`subtract-over-meet`, `subtract-is-subtract-meet` and `sym-diff-associative`.
+They are the strongest laws the harness has and are deliberately absent from
+`KNOWN`, so one of them firing is news.
+
+The fourth, `subtract-over-join`, fires about once per two million cases under
+`unit` — and is cause 2 rather than a bad identity. Its shrunk case has a
+dangling-only `b` and a `c` that is `b` plus one value, so `b | c` is exactly
+finding 4.
 
 The `Level::Paths` laws are also promoted to `Level::Values` for a lawful type,
 so commutativity of join and meet is checked on values there.

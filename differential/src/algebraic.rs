@@ -602,8 +602,9 @@ pub const KNOWN: &[Known] = &[
     // shrink to a value present on one side of an identity and absent on the
     // other, which is a lost value rather than a misplaced one.
     Known { signature: "bits:values:pw4", cause: LOSS },
-    // `bits:values:ternary` is deliberately absent: it has never fired.  An entry
-    // for something unobserved would excuse it in advance.
+    // Fires about once per three million cases for each lawful type, and the
+    // model sides with the route, so it is the baseline that lost the value.
+    Known { signature: "bits:values:ternary", cause: LOSS },
     Known { signature: "bits:values:nary", cause: LOSS },
     Known { signature: "bits:values:nary_poly", cause: LOSS },
     Known { signature: "bits:values:dnf", cause: LOSS },
@@ -630,11 +631,64 @@ pub const KNOWN: &[Known] = &[
     Known { signature: "bits:panic:eval:line_list_node.rs:2669", cause: LOSS },
     Known { signature: "bits:panic:eval:line_list_node.rs:2720", cause: LOSS },
     Known { signature: "bits:panic:eval:dense_byte_node.rs:2080", cause: LOSS },
-    // Deliberately absent, and worth keeping absent: the four identities in
-    // `laws::lawful_only` -- subtract-over-join, subtract-over-meet,
-    // subtract-is-subtract-meet, sym-diff-associative -- are checked only for the
-    // lawful type and have never failed.  They are the strongest laws the harness
-    // has; if one starts firing, that is news.
+    // ---------------------------------------------------------------- unit
+    // `PathMap<()>`: the set case, and lawful.  Nothing here can be a value
+    // bias, because there is no value to misplace -- so every entry is either a
+    // lost path or the dangling-path question.  It confirms the real defects
+    // independently of `bits`.
+    Known { signature: "unit:values:pw1", cause: ROOT },
+    Known { signature: "unit:values:pw2", cause: ROOT },
+    Known { signature: "unit:values:pw3", cause: ROOT },
+    Known { signature: "unit:values:pw5", cause: ROOT },
+    Known { signature: "unit:values:pw4", cause: LOSS },
+    Known { signature: "unit:values:nary", cause: LOSS },
+    Known { signature: "unit:values:nary_poly", cause: LOSS },
+    Known { signature: "unit:values:dnf", cause: LOSS },
+    Known { signature: "unit:values:model", cause: LOSS },
+    Known { signature: "unit:values:fuse", cause: LOSS },
+    Known { signature: "unit:values:fuse_distributed", cause: LOSS },
+    Known { signature: "unit:shape:pw1", cause: DANGLING },
+    Known { signature: "unit:shape:pw2", cause: DANGLING },
+    Known { signature: "unit:shape:pw3", cause: DANGLING },
+    Known { signature: "unit:shape:pw4", cause: DANGLING },
+    Known { signature: "unit:shape:pw5", cause: DANGLING },
+    Known { signature: "unit:shape:ternary", cause: DANGLING },
+    Known { signature: "unit:shape:nary", cause: DANGLING },
+    Known { signature: "unit:shape:nary_poly", cause: DANGLING },
+    Known { signature: "unit:shape:dnf", cause: DANGLING },
+    Known { signature: "unit:shape:fuse", cause: DANGLING },
+    Known { signature: "unit:shape:fuse_distributed", cause: DANGLING },
+    Known { signature: "unit:law:join-associative", cause: LOSS },
+    Known { signature: "unit:law:join-commutative", cause: LOSS },
+    Known { signature: "unit:law:join-distributes-over-meet", cause: LOSS },
+    Known { signature: "unit:law:sym-diff-is-join-minus-meet", cause: LOSS },
+    Known { signature: "unit:law:majority-is-pairwise-meets", cause: LOSS },
+    Known { signature: "unit:panic:build:line_list_node.rs:1745", cause: MERKLEIZE },
+    Known { signature: "unit:panic:eval:line_list_node.rs:2669", cause: LOSS },
+    Known { signature: "unit:panic:eval:dense_byte_node.rs:2080", cause: LOSS },
+    // Fires roughly once per million random cases, and the corpus reproduces it
+    // for all three types.
+    Known { signature: "unit:panic:eval:line_list_node.rs:2720", cause: LOSS },
+    // Two laws that fire only under `unit`, both once per couple of million
+    // cases, and both cause 2.  `unit` reaches it where the other types do not
+    // because every value is identical, so `merkleize` and `clone` share far
+    // more structure and the dangling-only operand that triggers the loss is
+    // easier to generate.
+    Known { signature: "unit:law:meet-distributes-over-join", cause: LOSS },
+    // One of the four identities that are only checked for a lawful value type.
+    // It failing is still cause 2, not a bad identity: the shrunk case has a
+    // dangling-only `b` and a `c` that is `b` plus one value, so `b | c` is
+    // exactly repro 4.
+    Known { signature: "unit:law:subtract-over-join", cause: LOSS },
+    Known { signature: "unit:values:ternary", cause: LOSS },
+
+    // Of the four identities in `laws::lawful_only` -- checked only for a lawful
+    // value type -- three have never failed: subtract-over-meet,
+    // subtract-is-subtract-meet and sym-diff-associative.  They are the
+    // strongest laws the harness has, and they are deliberately absent from this
+    // table so that one of them firing is news.  The fourth,
+    // subtract-over-join, fires once per couple of million cases under `unit`,
+    // and is cause 2 rather than a bad identity.
 ];
 
 pub fn known(signature: &str) -> Option<&'static Known> {
@@ -746,7 +800,11 @@ pub fn run<V: FuzzValue>(bytes: &[u8]) -> Outcome {
 /// This list and [`run_all`] are the only two places that know which types
 /// exist; the driver stays generic over them and reads the type back off a
 /// signature's first field.
-pub const VALUE_TYPES: &[&str] = &[<u64 as FuzzValue>::NAME, <value::Bits as FuzzValue>::NAME];
+pub const VALUE_TYPES: &[&str] = &[
+    <u64 as FuzzValue>::NAME,
+    <value::Bits as FuzzValue>::NAME,
+    <() as FuzzValue>::NAME,
+];
 
 /// Run one input under every value type.
 ///
@@ -757,6 +815,7 @@ pub const VALUE_TYPES: &[&str] = &[<u64 as FuzzValue>::NAME, <value::Bits as Fuz
 pub fn run_all(bytes: &[u8], f: &mut impl FnMut(&'static str, Outcome)) {
     f(<u64 as FuzzValue>::NAME, run::<u64>(bytes));
     f(<value::Bits as FuzzValue>::NAME, run::<value::Bits>(bytes));
+    f(<() as FuzzValue>::NAME, run::<()>(bytes));
 }
 
 /// Signatures of one outcome, which for a panic has to be built here because
@@ -792,6 +851,8 @@ pub fn value_type_of(signature: &str) -> &str {
 pub fn describe_as(type_name: &str, bytes: &[u8]) -> String {
     if type_name == <value::Bits as FuzzValue>::NAME {
         describe(&decode::<value::Bits>(bytes))
+    } else if type_name == <() as FuzzValue>::NAME {
+        describe(&decode::<()>(bytes))
     } else {
         describe(&decode::<u64>(bytes))
     }

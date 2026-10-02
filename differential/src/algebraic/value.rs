@@ -164,6 +164,41 @@ impl FuzzValue for Bits {
     }
 }
 
+/// The set case: a path is either present or absent, with nothing attached.
+///
+/// `Option<()>` is exactly the two-element Boolean algebra, so `()` is **lawful**
+/// -- unlike `u64`, and for the same reason `bits` is.  It earns a place of its
+/// own anyway, for two reasons neither of the others covers.
+///
+/// First, `PathMap<()>` is what a caller writes when the trie *is* the data, and
+/// it is what the `unit-value-optimizations` and `unit-size` branches are about.
+/// None of that is on `master` yet, so today this exercises the generic path; if
+/// those land it becomes the only thing covering the specialised one.
+///
+/// Second, and more useful now: `()`'s `pjoin` and `pmeet` return
+/// `Identity(SELF_IDENT | COUNTER_IDENT)` *unconditionally* -- **both** identity
+/// bits, always.  `u64` returns that only for equal values and `bits` only for
+/// equal masks, so neither saturates the "either side will do" path that the node
+/// code uses to decide it can hand back an operand unchanged and keep sharing it.
+/// Findings 4 and 6 are both about exactly that machinery, so a value type that
+/// drives it on every single combination is worth having.
+///
+/// It cannot produce `Element`, but that is not a gap here: with one inhabitant
+/// there is no combined value to store.  `bits` covers that.
+impl FuzzValue for () {
+    const NAME: &'static str = "unit";
+    const LAWFUL: bool = true;
+    // Both operands are `()`, so returning either is returning the left one, and
+    // `OverlayZipper`'s `a.or(b)` is the join.
+    const JOIN_PICKS_LEFT: bool = true;
+
+    fn generate(_g: &mut Gen) -> Self {}
+
+    fn show(&self) -> String {
+        "*".to_string()
+    }
+}
+
 /// Distinct values in circulation for `u64`.
 ///
 /// Tiny on purpose: `psubtract` on `u64` is `None` only when the two values are

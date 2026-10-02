@@ -173,6 +173,82 @@ fn dnf_rejects_non_monotone_operators() {
 
 /// The lawful value type has to actually be lawful, or every "real defect" the
 /// comparison attributes to the crate could be its fault instead.
+/// The zipper algebra over `PathMap<()>`, which `zipper_algebra.rs` does not
+/// test at all -- every test there uses `u64`.
+///
+/// `()` is lawful, so these are plain set operations and the expected answers
+/// are not open to interpretation.  Spelled out rather than compared against
+/// `PathMap::join` and friends, because those have defects of their own.
+#[test]
+fn zipper_algebra_over_the_unit_type() {
+    use pathmap::experimental::zipper_algebra::{
+        zipper_join, zipper_meet, zipper_n_meet, zipper_n_sym_diff, zipper_subtract,
+        zipper_sym_diff,
+    };
+    use pathmap::zipper::{ZipperMoving, ZipperPath, ZipperValues};
+    use pathmap::PathMap;
+
+    fn mk(paths: &[&[u8]]) -> PathMap<()> {
+        let mut m = PathMap::new();
+        for p in paths {
+            m.set_val_at(p, ());
+        }
+        m
+    }
+    fn set(m: &PathMap<()>) -> Vec<Vec<u8>> {
+        let mut z = m.read_zipper();
+        let mut out = Vec::new();
+        z.reset();
+        while z.to_next_step() {
+            if z.val().is_some() {
+                out.push(z.path().to_vec());
+            }
+        }
+        out
+    }
+
+    let a = mk(&[&[0, 1], &[0, 2], &[3]]);
+    let b = mk(&[&[0, 2], &[3], &[4]]);
+    let c = mk(&[&[0, 2], &[5]]);
+
+    macro_rules! pair {
+        ($f:ident) => {{
+            let mut out = PathMap::<()>::new();
+            {
+                let (mut za, mut zb) = (a.read_zipper(), b.read_zipper());
+                let mut wz = out.write_zipper();
+                $f(&mut za, &mut zb, &mut wz);
+            }
+            set(&out)
+        }};
+    }
+    assert_eq!(pair!(zipper_join), vec![vec![0, 1], vec![0, 2], vec![3], vec![4]]);
+    assert_eq!(pair!(zipper_meet), vec![vec![0, 2], vec![3]]);
+    assert_eq!(pair!(zipper_subtract), vec![vec![0, 1]]);
+    // Present in exactly one side.
+    assert_eq!(pair!(zipper_sym_diff), vec![vec![0, 1], vec![4]]);
+
+    macro_rules! triple {
+        ($f:ident) => {{
+            let mut out = PathMap::<()>::new();
+            {
+                let mut zs = [a.read_zipper(), b.read_zipper(), c.read_zipper()];
+                let mut wz = out.write_zipper();
+                $f(&mut zs, &mut wz);
+            }
+            set(&out)
+        }};
+    }
+    // Only [0,2] is in all three.
+    assert_eq!(triple!(zipper_n_meet), vec![vec![0, 2]]);
+    // Odd number of occurrences: [0,1] in one, [0,2] in three, [3] in two, [4]
+    // and [5] in one each.
+    assert_eq!(
+        triple!(zipper_n_sym_diff),
+        vec![vec![0, 1], vec![0, 2], vec![4], vec![5]]
+    );
+}
+
 #[test]
 fn bits_is_a_boolean_algebra() {
     let sample: Vec<Bits> = (1u64..16).map(Bits).collect();
@@ -245,6 +321,7 @@ fn route_numbering_is_the_same_for_every_value_type() {
         }
     }
     assert!(<Bits as FuzzValue>::LAWFUL);
+    assert!(<() as FuzzValue>::LAWFUL);
     assert!(!<u64 as FuzzValue>::LAWFUL);
     // The overlay join strategy cannot work for a type whose join creates
     // values, because OverlayZipper's mapping returns a reference.

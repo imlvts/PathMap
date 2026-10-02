@@ -343,47 +343,47 @@ fn value_type_comparison(tally: &Tally) {
         return;
     }
 
-    println!("\nby value type -- {} is lawful, u64 is not:", types[1]);
-    println!("  {:<38} {:>10} {:>10}", "finding", types[0], types[1]);
-    let mut only_first = Vec::new();
-    let mut only_second = Vec::new();
+    let lawful: Vec<&str> =
+        types.iter().copied().filter(|t| *t != "u64").collect();
+    println!("\nby value type -- {} are lawful, u64 is not:", lawful.join(" and "));
+    print!("  {:<38}", "finding");
+    for t in types {
+        print!(" {t:>9}");
+    }
+    println!();
+
+    // Which types see each finding, so the groups below can be built by subset.
+    let mut by_subset: BTreeMap<Vec<&str>, Vec<String>> = BTreeMap::new();
     for k in &all {
-        let a = per_type[0].get(k).copied();
-        let b = per_type[1].get(k).copied();
-        let cell = |v: Option<usize>| match v {
-            Some(n) => n.to_string(),
-            None => "-".to_string(),
-        };
-        println!("  {k:<38} {:>10} {:>10}", cell(a), cell(b));
-        match (a, b) {
-            (Some(_), None) => only_first.push(k.clone()),
-            (None, Some(_)) => only_second.push(k.clone()),
-            _ => {}
+        print!("  {k:<38}");
+        let mut seen = Vec::new();
+        for (i, t) in types.iter().enumerate() {
+            match per_type[i].get(k) {
+                Some(n) => {
+                    print!(" {n:>9}");
+                    seen.push(*t);
+                }
+                None => print!(" {:>9}", "-"),
+            }
         }
+        println!();
+        by_subset.entry(seen).or_default().push(k.clone());
     }
 
-    println!(
-        "\n  {} only  ({} finding(s)) -- artefacts of a value type that is not a lattice:",
-        types[0],
-        only_first.len()
-    );
-    for k in &only_first {
-        println!("    {k}");
-    }
-    if only_second.is_empty() {
-        println!(
-            "\n  {} only  (0) -- nothing was being masked by {}",
-            types[1], types[0]
-        );
-    } else {
-        println!(
-            "\n  {} only  ({}) -- REAL, and {} was hiding them:",
-            types[1],
-            only_second.len(),
-            types[0]
-        );
-        for k in &only_second {
-            println!("    {k}");
+    println!("\nseen under:");
+    for (subset, findings) in &by_subset {
+        let note = if subset.len() == types.len() {
+            "  <- value-independent, or one defect amplified; read the counts"
+        } else if subset == &["u64"] {
+            "  <- artefacts: u64's instances are not a lattice"
+        } else if subset.contains(&"u64") {
+            ""
+        } else {
+            "  <- REAL, and u64 was hiding them"
+        };
+        println!("  {:<22}{note}", subset.join(" + "));
+        for f in findings {
+            println!("      {f}");
         }
     }
 }
@@ -395,13 +395,17 @@ fn is_fatal(sig: &str, args: &Args) -> bool {
     if algebraic::known(sig).is_some() {
         return false;
     }
-    if sig.starts_with("panic:") {
-        return true;
+    // The class is the *second* field: signatures are `<value type>:<class>:...`.
+    // Matching against the start of the whole signature silently stopped working
+    // when the value-type prefix was added, which made every class fall through
+    // to "not fatal" and left the gate passing runs that had turned up new
+    // findings.  Parse the field rather than the prefix.
+    let class = sig.split(':').nth(1).unwrap_or("");
+    match class {
+        "panic" => true,
+        "shape" => args.shape_fatal,
+        c => DEFAULT_FATAL.iter().any(|f| f.tag() == c),
     }
-    if sig.starts_with("shape:") {
-        return args.shape_fatal;
-    }
-    DEFAULT_FATAL.iter().any(|c| sig.starts_with(c.tag()))
 }
 
 fn sanitize(sig: &str) -> String {
