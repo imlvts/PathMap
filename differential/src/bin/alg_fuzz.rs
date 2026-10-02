@@ -9,6 +9,21 @@
 //! Everything runs in process.  There is no oracle to start and no child to
 //! talk to, so a case costs a few microseconds and a run is bounded by how many
 //! tries it can build rather than by IPC.
+//!
+//! # Soundness limit
+//!
+//! That in-process design has a known hole: **a run that catches panics can
+//! abort with heap corruption**, reproducibly, after enough of them.  Every
+//! panic the fuzzer catches fired *mid-mutation* inside `pathmap`'s node code --
+//! a `debug_assert!` in a merge, or `merkleize`'s `unwrap` -- and unwinding out
+//! of a half-updated node leaves a trie that is not safe to drop.  Measured by
+//! elimination: it tracks the number of panics caught, not the build profile,
+//! the thread count or the value type, and a run that catches none is clean.
+//!
+//! So treat the first panic in a run as the end of the useful output.  Findings
+//! printed before it are valid; a run that aborts has lost whatever it had not
+//! yet printed.  `ALGEBRAIC_FUZZING.md` has the table and the intended fix,
+//! which is to make panics terminal and rare rather than caught and counted.
 
 use std::collections::BTreeMap;
 use std::io::Write as _;
@@ -22,8 +37,10 @@ use differential::algebraic::{self, Class, Outcome, Rng, signatures};
 ///
 /// `Shape` is not among them.  Whether a dangling path survives an operation is
 /// unsettled in the crate -- `SPEC_WARTS.md` and the `meet_into-keeps-dangling*`
-/// corpus entries are the same question -- and routes that graft whole subtries
-/// will keep structure that routes walking path by path cannot.  Those are
+/// corpus entries are the same question.  The two families answer it differently
+/// and consistently: the lockstep traversals in `experimental::zipper_algebra`
+/// discard dangling structure, and `PathMap`'s whole-map operations and the
+/// write-zipper forms preserve it (`bin/alg_bug_repros` case 9).  Those are
 /// counted and printed, so a change in them is visible, but they do not turn a
 /// run red unless `--shape` asks them to.  A wrong *value* is never ambiguous
 /// and always fails.

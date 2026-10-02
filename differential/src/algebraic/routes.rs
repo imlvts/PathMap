@@ -228,7 +228,7 @@ pub fn apply<V: FuzzValue>(op: Op, k: usize, a: &PathMap<V>, b: &PathMap<V>) -> 
         (Op::Join, 3) => {
             // Consumes the source.  `prune = false` keeps whatever dangling
             // structure the operation leaves, so this route is comparable with
-            // the grafting ones rather than silently tidier than them.
+            // the other write-zipper forms rather than silently tidier.
             let mut out = a.clone();
             let mut src = b.clone();
             {

@@ -523,8 +523,9 @@ pub struct Known {
 ///    drops root values outright.  These are routes disagreeing with the
 ///    baseline in the ordinary way.
 ///
-/// 4. **Dangling paths** (`dangling`).  Routes that graft whole subtries keep
-///    structure that routes walking path by path do not.  Unsettled rather than
+/// 4. **Dangling paths** (`dangling`).  The lockstep traversals in
+///    `experimental::zipper_algebra` discard dangling structure; `PathMap`'s
+///    whole-map operations and the write-zipper forms preserve it.  Unsettled rather than
 ///    wrong -- see `../SPEC_WARTS.md` -- hence its own class, `shape`, which
 ///    does not fail a run unless `--shape` says so.
 ///
@@ -535,7 +536,7 @@ pub struct Known {
 const BIAS: &str = "value bias by node layout, u64-only (repro 3)";
 const LOSS: &str = "join loses a value across shared structure (repro 4)";
 const ROOT: &str = "write-zipper forms lose root values (repros 1, 2)";
-const DANGLING: &str = "dangling-path treatment differs by route";
+const DANGLING: &str = "zipper traversals drop dangling paths, map ops keep them (repro 9)";
 const MERKLEIZE: &str = "merkleize panics on dangling-only structure (repro 5)";
 /// Re-nesting a join moves which operand is on the left *and* which pair of
 /// tries meets a shared node first, so both cause 1 and cause 2 reach these.

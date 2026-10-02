@@ -173,6 +173,76 @@ fn dnf_rejects_non_monotone_operators() {
 
 /// The lawful value type has to actually be lawful, or every "real defect" the
 /// comparison attributes to the crate could be its fault instead.
+/// The `shape` class's characterisation, as `bin/alg_bug_repros` case 9 states it:
+/// the lockstep traversals discard dangling structure and the whole-map
+/// operations preserve it.
+///
+/// Pinned because the write-up had it backwards at first, and because if either
+/// family changes, the right outcome is this test failing and the question being
+/// settled -- not the claim quietly going stale.
+#[test]
+fn zipper_traversals_drop_dangling_paths_and_map_ops_keep_them() {
+    use pathmap::experimental::zipper_algebra::{zipper_join, zipper_meet};
+    use pathmap::zipper::{ZipperMoving, ZipperPath, ZipperWriting};
+    use pathmap::PathMap;
+
+    fn dangling(paths: &[&[u8]]) -> PathMap<u64> {
+        let mut m = PathMap::new();
+        let mut wz = m.write_zipper();
+        for p in paths {
+            wz.reset();
+            wz.descend_to(*p);
+            wz.create_path();
+        }
+        drop(wz);
+        m
+    }
+    fn paths(m: &PathMap<u64>) -> Vec<Vec<u8>> {
+        let mut z = m.read_zipper();
+        let mut out = Vec::new();
+        z.reset();
+        while z.to_next_step() {
+            out.push(z.path().to_vec());
+        }
+        out
+    }
+
+    let d2 = dangling(&[&[0], &[1]]);
+    let dv = {
+        let mut m = dangling(&[&[0, 0]]);
+        m.write_zipper_at_path(&[1]).set_val(7);
+        m
+    };
+
+    let mut zj = PathMap::<u64>::new();
+    {
+        let (mut a, mut b) = (d2.read_zipper(), dv.read_zipper());
+        let mut wz = zj.write_zipper();
+        zipper_join(&mut a, &mut b, &mut wz);
+    }
+    // The traversal keeps only the path that carries a value.
+    assert_eq!(paths(&zj), vec![vec![1]]);
+    // The whole-map operation keeps the dangling structure too.
+    assert_eq!(paths(&d2.join(&dv)), vec![vec![0], vec![0, 0], vec![1]]);
+
+    let mut zm = PathMap::<u64>::new();
+    {
+        let (mut a, mut b) = (d2.read_zipper(), dv.read_zipper());
+        let mut wz = zm.write_zipper();
+        zipper_meet(&mut a, &mut b, &mut wz);
+    }
+    assert!(paths(&zm).is_empty());
+    assert_eq!(paths(&d2.meet(&dv)), vec![vec![0], vec![1]]);
+
+    // The write-zipper forms side with the whole-map operations.
+    let mut wi = d2.clone();
+    {
+        let mut wz = wi.write_zipper();
+        wz.meet_into(&dv.read_zipper(), false);
+    }
+    assert_eq!(paths(&wi), paths(&d2.meet(&dv)));
+}
+
 /// The zipper algebra over `PathMap<()>`, which `zipper_algebra.rs` does not
 /// test at all -- every test there uses `u64`.
 ///

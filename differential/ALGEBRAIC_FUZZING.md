@@ -279,9 +279,19 @@ instead of cloned. A generator that only wrote fresh tries would find neither.
 
 `shape` is separated because the semantics are genuinely unsettled — see
 `../SPEC_WARTS.md` and the `meet_into-keeps-dangling*` corpus entries, which are
-the same question — and because routes that graft whole subtries will keep
-structure that routes walking path by path cannot. A wrong *value* is never
-ambiguous.
+the same question. The two families answer it differently and *consistently*,
+which is worth knowing because it says which side has to change once the question
+is settled:
+
+* the lockstep traversals in `experimental::zipper_algebra` **discard** dangling
+  structure;
+* `PathMap`'s whole-map operations and the write-zipper forms (`join_into`,
+  `meet_into`, `subtract_into`) **preserve** it.
+
+`bin/alg_bug_repros` case 9 shows three of them side by side, the sharpest being
+`d ^ {}`: symmetric difference with the empty trie ought to be the identity, and
+`zipper_sym_diff` returns nothing where `(d | e) - (d & e)` returns `d`. A wrong
+*value* is never ambiguous.
 
 Signatures are `class:route`, and nothing more. An earlier version appended the
 operators the expression used, which looked more informative and was much
@@ -289,6 +299,51 @@ worse: one defect in `meet` produced dozens of signatures because it surfaced
 under every operator combination containing a meet. The expression, the
 operands and the diff all live in the saved `.txt`; the signature's only job is
 to collapse a million inputs onto a handful of lines.
+
+## Soundness limit: catching a panic in process is not safe
+
+**A long run that catches panics can abort with heap corruption.** Reproducibly:
+
+```
+$ ./alg_fuzz --random 2000000 --seed 55 --jobs 8      # debug-assertions build
+malloc(): unaligned tcache chunk detected
+Aborted (core dumped)
+```
+
+Narrowed by elimination, each at 2M cases, seed 55, 8 jobs:
+
+| build | `merkleize` in the generator | caught panics | result |
+| --- | --- | --- | --- |
+| debug assertions | yes | ~27k | **abort** |
+| debug assertions | no | ~100 | **abort** |
+| release | yes | ~27k | **abort** |
+| release | no | 0 | clean, exit 0 |
+
+So it tracks the *number of panics caught*, not the build profile, the thread
+count or the value type. The cause is that `catch_unwind` resumes after a panic
+that fired **mid-mutation inside `pathmap`'s node code**: unwinding out of a
+half-updated node leaves a trie that is not safe to drop, and the damage shows up
+later as an invalid free. Every panic the fuzzer catches is one of these — a
+`debug_assert!` inside a merge, or `merkleize`'s `unwrap`, both of which are
+"this cannot happen" sites rather than supported unwind paths.
+
+That is a limitation of *this* harness, not an independent defect. The crash
+fuzzer does not have it because AFL runs one input per process and so never
+continues after a panic.
+
+**Until this is fixed, treat the first panic in a run as the end of the useful
+output.** Findings reported before it are valid — the signature counts and
+reproducers are written as they are found — but anything after the first caught
+panic is suspect, and a run that aborts has lost whatever it had not yet printed.
+A release-profile run on a generator without `merkleize` catches nothing and is
+unaffected.
+
+The fix is to make panics terminal and rare, the way a crash fuzzer treats them:
+stop the run on the first one, and stop generating the one panic that is already
+documented with a standalone reproducer (`merkleize`, repro 5) so that the
+remaining ones are rare enough for stopping to cost nothing. That needs the
+corpus replay to run one input per process, so it is a design change rather than
+a patch, and it is not done yet.
 
 ## Debug assertions are a separate mode
 
@@ -446,7 +501,7 @@ disagrees with the rest, suspect the route first.
 | `src/algebraic/value.rs` | the `FuzzValue` trait and the lawful `Bits` type |
 | `src/algebraic/shape.rs` | what "the same result" means |
 | `src/bin/alg_fuzz.rs` | the driver: generation, replay, shrinking, reporting |
-| `src/bin/alg_bug_repros.rs` | the findings as plain `pathmap` calls |
+| `src/bin/alg_bug_repros.rs` | every cause in `KNOWN` as plain `pathmap` calls |
 | `src/bin/alg_lattice_check.rs` | whether a divergence is the crate's fault or `u64`'s |
 | `tests/algebraic.rs` | the corpus gate and the harness invariants |
 | `algebraic-corpus/` | one minimised input per signature |
