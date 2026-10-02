@@ -30,6 +30,7 @@ pub mod laws;
 pub mod model;
 pub mod routes;
 pub mod shape;
+pub mod value;
 
 use pathmap::PathMap;
 use pathmap::zipper::{ZipperMoving, ZipperWriting};
@@ -39,6 +40,7 @@ use expr::{Expr, Op, MAX_VARS};
 use laws::{Level, EMPTY, LAW_OPERANDS};
 use routes::Route;
 use shape::{shape_of_map, show_shape, Shape, Values};
+use value::FuzzValue;
 
 /// Operand tries per case.  Fixed rather than generated so the expression
 /// generator can always name any of them, and so [`MAX_VARS`] is the only
@@ -53,37 +55,6 @@ pub const MAX_ENTRIES: usize = 7;
 
 /// Upper bound on a generated path's length.
 pub const MAX_PATH_LEN: usize = 5;
-
-/// Distinct values in circulation.  Deliberately tiny: `psubtract` on `u64` is
-/// `None` only when the two values are *equal*, and symmetric difference
-/// cancels on coincident paths, so a large value space would make both
-/// operations degenerate into set difference and set union and never exercise
-/// the value-combining paths at all.
-pub const VALUES: u64 = 3;
-
-/// `u64`'s lattice instances are degenerate, and that bounds what this fuzzer
-/// can see.
-///
-/// `pjoin` is `left_biased_pjoin`, `pmeet` is `Identity(SELF_IDENT)`: both
-/// return the left operand, so `a | b == a & b` for every pair and the impl is
-/// not a lattice at all (it is marked `//GOAT trash` in `pathmap::ring`).  Two
-/// consequences, both of them limits on this harness rather than on the crate:
-///
-/// 1. Neither `pjoin` nor `pmeet` can return `AlgebraicResult::Element` -- every
-///    arm is `Identity`.  So the paths that handle *a combined value that is a
-///    new value*, and have to store it, are never reached.  That is a large
-///    part of what the algebra does, and this fuzzer does not currently test it.
-///
-/// 2. Several laws in `laws.rs` are checked on paths rather than values, and
-///    several more are listed there as "not laws".  Both are artefacts of this
-///    value type, not facts about the algebra; under a real lattice they are
-///    ordinary value-level laws.
-///
-/// `pathmap::utils::ByteMask` already implements `Lattice` and
-/// `DistributiveLattice` properly, by delegating to bitwise operations on
-/// `[u64; 4]`, and would lift both limits.  Doing that means making this module
-/// generic over the value type, which it is not yet.
-pub const VALUE_TYPE_IS_DEGENERATE: () = ();
 
 /// Byte decoding with the out-of-input behaviour this fuzzer wants.
 ///
@@ -122,9 +93,6 @@ impl<'a> Gen<'a> {
         let n = self.modn(max_len + 1);
         (0..n).map(|_| self.path_byte()).collect()
     }
-    pub fn val(&mut self) -> u64 {
-        self.byte() as u64 % VALUES + 1
-    }
 }
 
 /// How one operand trie was built.  Recorded so a failure report can say
@@ -150,15 +118,15 @@ pub enum Build {
     MerkleizedOf(usize),
 }
 
-pub struct Case {
+pub struct Case<V: FuzzValue> {
     pub expr: Expr,
-    pub operands: Vec<PathMap<u64>>,
+    pub operands: Vec<PathMap<V>>,
     pub builds: Vec<Build>,
     pub alphabet: u16,
 }
 
 /// Decode a byte string into a case.  Total: every input decodes.
-pub fn decode(bytes: &[u8]) -> Case {
+pub fn decode<V: FuzzValue>(bytes: &[u8]) -> Case<V> {
     let mut g = Gen::new(bytes);
     // A 3-letter alphabet is the default because collisions are the point; the
     // wider ones are sampled to keep node-type coverage honest, since `pathmap`
@@ -171,7 +139,7 @@ pub fn decode(bytes: &[u8]) -> Case {
     };
     let alphabet = g.alphabet;
 
-    let mut operands: Vec<PathMap<u64>> = Vec::with_capacity(OPERANDS);
+    let mut operands: Vec<PathMap<V>> = Vec::with_capacity(OPERANDS);
     let mut builds: Vec<Build> = Vec::with_capacity(OPERANDS);
     for i in 0..OPERANDS {
         let build = pick_build(&mut g, i);
@@ -195,7 +163,7 @@ fn pick_build(g: &mut Gen, i: usize) -> Build {
     }
 }
 
-fn build_operand(g: &mut Gen, build: Build, prior: &[PathMap<u64>]) -> PathMap<u64> {
+fn build_operand<V: FuzzValue>(g: &mut Gen, build: Build, prior: &[PathMap<V>]) -> PathMap<V> {
     match build {
         Build::Fresh => fresh(g),
         Build::CloneOf(j) => {
@@ -208,7 +176,7 @@ fn build_operand(g: &mut Gen, build: Build, prior: &[PathMap<u64>]) -> PathMap<u
             // Rotation rather than a full shuffle because it is enough to
             // change which insert splits which node, and it keeps the decoding
             // cost one byte.
-            let entries: Vec<(Vec<u8>, u64)> =
+            let entries: Vec<(Vec<u8>, V)> =
                 shape::values_of_shape(&shape_of_map(&prior[j])).into_iter().collect();
             let mut out = PathMap::new();
             if !entries.is_empty() {
@@ -218,7 +186,7 @@ fn build_operand(g: &mut Gen, build: Build, prior: &[PathMap<u64>]) -> PathMap<u
                     let (p, v) = &entries[(off + r) % entries.len()];
                     wz.reset();
                     wz.descend_to(p);
-                    wz.set_val(*v);
+                    wz.set_val(v.clone());
                 }
             }
             out
@@ -232,7 +200,7 @@ fn build_operand(g: &mut Gen, build: Build, prior: &[PathMap<u64>]) -> PathMap<u
     }
 }
 
-fn fresh(g: &mut Gen) -> PathMap<u64> {
+fn fresh<V: FuzzValue>(g: &mut Gen) -> PathMap<V> {
     let n = g.modn(MAX_ENTRIES + 1);
     let mut out = PathMap::new();
     {
@@ -248,14 +216,14 @@ fn fresh(g: &mut Gen) -> PathMap<u64> {
             if g.chance(20) {
                 wz.create_path();
             } else {
-                wz.set_val(g.val());
+                wz.set_val(V::generate(g));
             }
         }
     }
     out
 }
 
-fn mutate(g: &mut Gen, m: &mut PathMap<u64>) {
+fn mutate<V: FuzzValue>(g: &mut Gen, m: &mut PathMap<V>) {
     let n = g.modn(3);
     let mut wz = m.write_zipper();
     for _ in 0..n {
@@ -273,7 +241,7 @@ fn mutate(g: &mut Gen, m: &mut PathMap<u64>) {
                 wz.remove_branches(false);
             }
             _ => {
-                wz.set_val(g.val());
+                wz.set_val(V::generate(g));
             }
         }
     }
@@ -346,12 +314,12 @@ pub struct Divergence {
 /// the oldest and most heavily used entry points in the crate, which makes them
 /// the right thing to hold still, though the choice only affects which side of
 /// a disagreement gets named, not whether it is found.
-pub fn check(case: &Case) -> Vec<Divergence> {
+pub fn check<V: FuzzValue>(case: &Case<V>) -> Vec<Divergence> {
     let mut out = Vec::new();
 
     let baseline_route = Route::Pointwise(0);
     let baseline = routes::eval(baseline_route, &case.expr, &case.operands)
-        .expect("the pointwise route applies to every expression");
+        .expect("route 0 is the whole-map operations, which apply to everything");
     let base_name = baseline_route.name(&case.expr);
 
     // The model is computed up front so every divergence can say which side it
@@ -373,7 +341,7 @@ pub fn check(case: &Case) -> Vec<Divergence> {
         if got.values != baseline.values {
             out.push(Divergence {
                 class: Class::Values,
-                signature: format!("values:{}", route_key(route)),
+                signature: signature::<V>("values", &route_key::<V>(route)),
                 detail: format!(
                     "{} vs {name} evaluating {}: {}\n  {base_name}: {}\n  {name}: {}\n  {}",
                     base_name,
@@ -394,7 +362,7 @@ pub fn check(case: &Case) -> Vec<Divergence> {
             if bs != gs {
                 out.push(Divergence {
                     class: Class::Shape,
-                    signature: format!("shape:{}", route_key(route)),
+                    signature: signature::<V>("shape", &route_key::<V>(route)),
                     detail: format!(
                         "{} vs {name} evaluating {}: {}\n  {base_name}: {}\n  {name}: {}",
                         base_name,
@@ -418,15 +386,15 @@ pub fn check(case: &Case) -> Vec<Divergence> {
 /// and holds under another is already a route disagreement, which the loop
 /// above reports; running every law through every route would multiply the cost
 /// of a case by the number of laws for no new coverage.
-pub fn check_laws(case: &Case) -> Vec<Divergence> {
+pub fn check_laws<V: FuzzValue>(case: &Case<V>) -> Vec<Divergence> {
     // Operands 0..3 from the case, then the empty trie, which is what lets a
     // law state a unit or annihilator.
-    let mut ops: Vec<PathMap<u64>> = (0..EMPTY).map(|i| case.operands[i].clone()).collect();
+    let mut ops: Vec<PathMap<V>> = (0..EMPTY).map(|i| case.operands[i].clone()).collect();
     ops.push(PathMap::new());
     debug_assert_eq!(ops.len(), LAW_OPERANDS);
 
     let mut out = Vec::new();
-    for law in laws::laws() {
+    for law in laws::laws::<V>() {
         let l = routes::eval(Route::Pointwise(0), &law.lhs, &ops).unwrap();
         let r = routes::eval(Route::Pointwise(0), &law.rhs, &ops).unwrap();
         let (ok, detail) = match law.level {
@@ -462,7 +430,7 @@ pub fn check_laws(case: &Case) -> Vec<Divergence> {
         if !ok {
             out.push(Divergence {
                 class: Class::Law,
-                signature: format!("law:{}", law.name),
+                signature: signature::<V>("law", law.name),
                 detail: format!("{} ({:?}): {detail}", law.name, law.level),
             });
         }
@@ -477,10 +445,10 @@ pub fn check_laws(case: &Case) -> Vec<Divergence> {
 /// disagrees with both, so the defect is unlikely to be in either route's
 /// traversal and is more likely in a shared primitive -- or in the model, which
 /// is worth suspecting too.
-fn model_sides_with(
-    model: &Values,
-    baseline: &Values,
-    got: &Values,
+fn model_sides_with<V: FuzzValue>(
+    model: &Values<V>,
+    baseline: &Values<V>,
+    got: &Values<V>,
     base_name: &str,
     name: &str,
 ) -> String {
@@ -495,7 +463,13 @@ fn model_sides_with(
     }
 }
 
-fn route_key(r: Route) -> String {
+/// Signatures are prefixed with the value type, so the two instantiations never
+/// collide in one report and the difference between them is readable directly.
+pub fn signature<V: FuzzValue>(class: &str, rest: &str) -> String {
+    format!("{}:{class}:{rest}", V::NAME)
+}
+
+fn route_key<V: FuzzValue>(r: Route) -> String {
     match r {
         Route::Pointwise(k) => format!("pw{k}"),
         _ => r.name(&Expr::Var(0)),
@@ -558,105 +532,109 @@ pub struct Known {
 ///    algebraic defect: it fires while the operands are still being written,
 ///    before any operation runs, which is what the `build` in its signature
 ///    means.
-const BIAS: &str = "value bias by node layout (repro 3)";
+const BIAS: &str = "value bias by node layout, u64-only (repro 3)";
 const LOSS: &str = "join loses a value across shared structure (repro 4)";
 const ROOT: &str = "write-zipper forms lose root values (repros 1, 2)";
 const DANGLING: &str = "dangling-path treatment differs by route";
 const MERKLEIZE: &str = "merkleize panics on dangling-only structure (repro 5)";
 /// Re-nesting a join moves which operand is on the left *and* which pair of
 /// tries meets a shared node first, so both cause 1 and cause 2 reach these.
+/// Under the lawful type only cause 2 survives, which is why the counts collapse.
 const BIAS_OR_LOSS: &str = "value bias or lost value (repros 3, 4)";
-/// `fuse`'s `Xor` is `(l \ r) | (r \ l)`.  Two things reach it, and both land
-/// under the same signatures.
-///
-/// The first is cause 2, at the join on the end of that construction.
-///
-/// The second is **not** a disagreement about what symmetric difference means --
-/// an earlier version of this comment said it was, and that was wrong.
-/// `(a | b) \ (a & b)` and `(a \ b) | (b \ a)` are equal in any distributive
-/// lattice with a relative complement, so there is nothing to choose between.
-/// They come apart here because `u64`'s `Lattice` impl **is not a lattice**:
-/// `pjoin` is `left_biased_pjoin` and `pmeet` is `Identity(SELF_IDENT)`, so both
-/// are the function "return the left operand" and `a | b == a & b` for every
-/// pair.  In a lattice `a & b == a | b` forces `a == b`, so the impl asserts
-/// `1 == 2`.  With join and meet collapsed into one function the first formula
-/// becomes `a \ a`, which is bottom, while the second stays `a`.
-///
-/// `bool` in the same file is a genuine two-element Boolean algebra and the two
-/// formulas agree on all four of its inputs.  `bin/alg_lattice_check.rs` prints
-/// both tables.  See `ALGEBRAIC_FUZZING.md` for what this costs the fuzzer.
-const FUSE_XOR: &str = "fuse Xor: cause 2, plus u64's Lattice impl not being a lattice (repros 7, 8)";
+/// `fuse`'s `Xor` is `(l \\ r) | (r \\ l)`.  Cause 2 reaches the join on the end of
+/// that construction.  Under `u64` it *also* disagrees with `zipper_sym_diff`,
+/// because the two standard formulas for symmetric difference are only equal in a
+/// real lattice -- which is a fact about `u64`, not about either implementation.
+const FUSE_XOR: &str = "fuse Xor: cause 2, amplified under u64 by its non-lattice (repros 7, 8)";
 
 pub const KNOWN: &[Known] = &[
-    // Routes disagreeing with the baseline: `join_into` and `meet_2` losing
-    // root values, plus the baseline's own bias showing up as the zipper routes
-    // "disagreeing" with it.
-    Known { signature: "values:pw1", cause: ROOT },
-    Known { signature: "values:pw2", cause: ROOT },
-    Known { signature: "values:pw3", cause: ROOT },
-    Known { signature: "values:pw4", cause: BIAS },
-    Known { signature: "values:pw5", cause: BIAS },
-    Known { signature: "values:ternary", cause: BIAS },
-    Known { signature: "values:nary", cause: BIAS },
-    Known { signature: "values:nary_poly", cause: BIAS },
-    Known { signature: "values:dnf", cause: BIAS },
-    // The reference model has no trie and no bias, so it disagrees with the
-    // baseline exactly where the baseline is wrong.
-    Known { signature: "values:model", cause: BIAS },
-    // Dangling structure.
-    Known { signature: "shape:pw1", cause: DANGLING },
-    Known { signature: "shape:pw2", cause: DANGLING },
-    Known { signature: "shape:pw3", cause: DANGLING },
-    Known { signature: "shape:pw4", cause: DANGLING },
-    Known { signature: "shape:pw5", cause: DANGLING },
-    Known { signature: "shape:ternary", cause: DANGLING },
-    Known { signature: "shape:nary", cause: DANGLING },
-    Known { signature: "shape:nary_poly", cause: DANGLING },
-    Known { signature: "shape:dnf", cause: DANGLING },
-    // Laws.  Every value-level lattice law that puts the operands on different
-    // sides of a join or meet is sensitive to cause 1.
-    Known { signature: "law:join-associative", cause: BIAS_OR_LOSS },
-    Known { signature: "law:meet-associative", cause: BIAS },
-    Known { signature: "law:join-distributes-over-meet", cause: BIAS },
-    Known { signature: "law:meet-distributes-over-join", cause: BIAS },
-    Known { signature: "law:absorb-join-meet", cause: BIAS },
-    // `law:absorb-meet-join` is deliberately absent: it has never fired, across
-    // several million cases in both build profiles.  An entry for something
-    // unobserved would excuse it in advance, and `a & (a | b) == a` failing
-    // would be worth looking at rather than waving through.
-    Known { signature: "law:sym-diff-is-join-minus-meet", cause: BIAS },
-    // Join associativity again, with meets for leaves.  Reached by cause 2:
-    // `a & b` over an all-dangling `b` is a dangling-only trie, and joining
-    // that with a trie carrying values below the same paths loses them -- the
-    // same shape as repro 4.
-    Known { signature: "law:majority-is-pairwise-meets", cause: BIAS_OR_LOSS },
-    // Commutativity is checked on paths only, so a bias cannot break it -- only
-    // a lost path can.  This is cause 2, and the only law that detects it.
-    Known { signature: "law:join-commutative", cause: LOSS },
-    Known { signature: "panic:build:line_list_node.rs:1745", cause: MERKLEIZE },
-    // Debug-assertions builds only, and the sharpest view of cause 2 there is:
-    // joining a list node into a dense node reports `AlgebraicStatus::None`
-    // -- an empty result -- from two nodes that are not empty, which is the
-    // mechanism by which `a | b` loses a value in repro 4.
-    Known { signature: "panic:eval:line_list_node.rs:2669", cause: LOSS },
-    // The same defect at a different node type: joining two dense nodes, a
-    // cofree `pjoin` returns `None` while the left side still has a non-empty
-    // onward node, so the join discards that subtrie.  Where the subtrie holds
-    // values this is repro 4; where it holds only dangling paths the loss is
-    // invisible to a release build, which is why debug assertions are a mode of
-    // their own.
-    Known { signature: "panic:eval:dense_byte_node.rs:2080", cause: LOSS },
-    // `merge_from_list_node` returning `None` again, from `join_into_dyn` this
-    // time.  Three assertion sites, one story: join's "the result is empty"
-    // path is reachable from nodes that are not empty.
-    Known { signature: "panic:eval:line_list_node.rs:2720", cause: LOSS },
-    // The `fuse` routes agree with everything else on join, meet and subtract;
-    // only symmetric difference is out of step.  Verified by disabling `SymDiff`
-    // in the generator, which makes both `fuse` signatures disappear entirely.
-    Known { signature: "values:fuse", cause: FUSE_XOR },
-    Known { signature: "shape:fuse", cause: FUSE_XOR },
-    Known { signature: "values:fuse_distributed", cause: FUSE_XOR },
-    Known { signature: "shape:fuse_distributed", cause: FUSE_XOR },
+    // ---------------------------------------------------------------- u64
+    // Root values lost by the write-zipper forms.  Value-type-independent.
+    Known { signature: "u64:values:pw1", cause: ROOT },
+    Known { signature: "u64:values:pw2", cause: ROOT },
+    Known { signature: "u64:values:pw3", cause: ROOT },
+    // Everything below here on the u64 side is the bias, which the lawful type
+    // mostly cannot see: under a commutative join, picking the wrong operand
+    // only shows where one operand already contains the other.
+    Known { signature: "u64:values:pw4", cause: BIAS },
+    Known { signature: "u64:values:pw5", cause: BIAS },
+    Known { signature: "u64:values:ternary", cause: BIAS },
+    Known { signature: "u64:values:nary", cause: BIAS },
+    Known { signature: "u64:values:nary_poly", cause: BIAS },
+    Known { signature: "u64:values:dnf", cause: BIAS },
+    Known { signature: "u64:values:model", cause: BIAS },
+    Known { signature: "u64:values:fuse", cause: FUSE_XOR },
+    Known { signature: "u64:values:fuse_distributed", cause: FUSE_XOR },
+    Known { signature: "u64:shape:pw1", cause: DANGLING },
+    Known { signature: "u64:shape:pw2", cause: DANGLING },
+    Known { signature: "u64:shape:pw3", cause: DANGLING },
+    Known { signature: "u64:shape:pw4", cause: DANGLING },
+    Known { signature: "u64:shape:pw5", cause: DANGLING },
+    Known { signature: "u64:shape:ternary", cause: DANGLING },
+    Known { signature: "u64:shape:nary", cause: DANGLING },
+    Known { signature: "u64:shape:nary_poly", cause: DANGLING },
+    Known { signature: "u64:shape:dnf", cause: DANGLING },
+    Known { signature: "u64:shape:fuse", cause: DANGLING },
+    Known { signature: "u64:shape:fuse_distributed", cause: DANGLING },
+    Known { signature: "u64:law:join-associative", cause: BIAS_OR_LOSS },
+    Known { signature: "u64:law:join-distributes-over-meet", cause: BIAS_OR_LOSS },
+    Known { signature: "u64:law:majority-is-pairwise-meets", cause: BIAS_OR_LOSS },
+    Known { signature: "u64:law:join-commutative", cause: LOSS },
+    // These four fire only for u64: they need join and meet to be different
+    // functions, and for u64 they are the same one.
+    Known { signature: "u64:law:meet-associative", cause: BIAS },
+    Known { signature: "u64:law:meet-distributes-over-join", cause: BIAS },
+    Known { signature: "u64:law:absorb-join-meet", cause: BIAS },
+    Known { signature: "u64:law:sym-diff-is-join-minus-meet", cause: BIAS },
+    Known { signature: "u64:panic:build:line_list_node.rs:1745", cause: MERKLEIZE },
+    Known { signature: "u64:panic:eval:line_list_node.rs:2669", cause: LOSS },
+    Known { signature: "u64:panic:eval:line_list_node.rs:2720", cause: LOSS },
+    Known { signature: "u64:panic:eval:dense_byte_node.rs:2080", cause: LOSS },
+
+    // ---------------------------------------------------------------- bits
+    // The lawful type.  Everything here is a real defect: there is no value
+    // bias to blame, because `a | b` does not depend on operand order.
+    Known { signature: "bits:values:pw1", cause: ROOT },
+    Known { signature: "bits:values:pw2", cause: ROOT },
+    Known { signature: "bits:values:pw3", cause: ROOT },
+    Known { signature: "bits:values:pw5", cause: ROOT },
+    // Rare under the lawful type, and cause 2 every time: the law residues all
+    // shrink to a value present on one side of an identity and absent on the
+    // other, which is a lost value rather than a misplaced one.
+    Known { signature: "bits:values:pw4", cause: LOSS },
+    // `bits:values:ternary` is deliberately absent: it has never fired.  An entry
+    // for something unobserved would excuse it in advance.
+    Known { signature: "bits:values:nary", cause: LOSS },
+    Known { signature: "bits:values:nary_poly", cause: LOSS },
+    Known { signature: "bits:values:dnf", cause: LOSS },
+    Known { signature: "bits:values:model", cause: LOSS },
+    Known { signature: "bits:values:fuse", cause: LOSS },
+    Known { signature: "bits:values:fuse_distributed", cause: LOSS },
+    Known { signature: "bits:shape:pw1", cause: DANGLING },
+    Known { signature: "bits:shape:pw2", cause: DANGLING },
+    Known { signature: "bits:shape:pw3", cause: DANGLING },
+    Known { signature: "bits:shape:pw4", cause: DANGLING },
+    Known { signature: "bits:shape:pw5", cause: DANGLING },
+    Known { signature: "bits:shape:ternary", cause: DANGLING },
+    Known { signature: "bits:shape:nary", cause: DANGLING },
+    Known { signature: "bits:shape:nary_poly", cause: DANGLING },
+    Known { signature: "bits:shape:dnf", cause: DANGLING },
+    Known { signature: "bits:shape:fuse", cause: DANGLING },
+    Known { signature: "bits:shape:fuse_distributed", cause: DANGLING },
+    Known { signature: "bits:law:join-associative", cause: LOSS },
+    Known { signature: "bits:law:join-commutative", cause: LOSS },
+    Known { signature: "bits:law:join-distributes-over-meet", cause: LOSS },
+    Known { signature: "bits:law:sym-diff-is-join-minus-meet", cause: LOSS },
+    Known { signature: "bits:law:majority-is-pairwise-meets", cause: LOSS },
+    Known { signature: "bits:panic:build:line_list_node.rs:1745", cause: MERKLEIZE },
+    Known { signature: "bits:panic:eval:line_list_node.rs:2669", cause: LOSS },
+    Known { signature: "bits:panic:eval:line_list_node.rs:2720", cause: LOSS },
+    Known { signature: "bits:panic:eval:dense_byte_node.rs:2080", cause: LOSS },
+    // Deliberately absent, and worth keeping absent: the four identities in
+    // `laws::lawful_only` -- subtract-over-join, subtract-over-meet,
+    // subtract-is-subtract-meet, sym-diff-associative -- are checked only for the
+    // lawful type and have never failed.  They are the strongest laws the harness
+    // has; if one starts firing, that is news.
 ];
 
 pub fn known(signature: &str) -> Option<&'static Known> {
@@ -743,8 +721,8 @@ fn panic_msg(e: Box<dyn core::any::Any + Send>) -> (String, String) {
 ///
 /// Two `catch_unwind`s rather than one, so a crash can say which phase it was
 /// in.  The case has to outlive the first, hence the separation.
-pub fn run(bytes: &[u8]) -> Outcome {
-    let case = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode(bytes))) {
+pub fn run<V: FuzzValue>(bytes: &[u8]) -> Outcome {
+    let case = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decode::<V>(bytes))) {
         Err(e) => {
             let (site, msg) = panic_msg(e);
             return Outcome::Panicked(Phase::Build, site, msg);
@@ -763,16 +741,60 @@ pub fn run(bytes: &[u8]) -> Outcome {
 
 /// Signatures an input produces: the grouping keys, without the detail.  Also
 /// the invariant the shrinker preserves.
-pub fn signatures(bytes: &[u8]) -> Vec<String> {
-    match run(bytes) {
+/// Every value type the fuzzer runs, by name.
+///
+/// This list and [`run_all`] are the only two places that know which types
+/// exist; the driver stays generic over them and reads the type back off a
+/// signature's first field.
+pub const VALUE_TYPES: &[&str] = &[<u64 as FuzzValue>::NAME, <value::Bits as FuzzValue>::NAME];
+
+/// Run one input under every value type.
+///
+/// Both, every time, and that is the point: a finding under `u64` and not under
+/// `bits` is an artefact of `u64`'s degenerate lattice instance, and one under
+/// both -- or under `bits` alone -- is a defect in the crate.  Checking only the
+/// lawful type would be cheaper and would lose the comparison.
+pub fn run_all(bytes: &[u8], f: &mut impl FnMut(&'static str, Outcome)) {
+    f(<u64 as FuzzValue>::NAME, run::<u64>(bytes));
+    f(<value::Bits as FuzzValue>::NAME, run::<value::Bits>(bytes));
+}
+
+/// Signatures of one outcome, which for a panic has to be built here because
+/// the phase and site are not a `Divergence`.
+pub fn outcome_signatures(type_name: &str, outcome: &Outcome) -> Vec<String> {
+    match outcome {
         Outcome::Clean => Vec::new(),
-        Outcome::Diverged(d) => d.into_iter().map(|d| d.signature).collect(),
-        Outcome::Panicked(p, site, _) => vec![panic_signature(p, &site)],
+        Outcome::Diverged(d) => d.iter().map(|d| d.signature.clone()).collect(),
+        Outcome::Panicked(p, site, _) => vec![panic_signature(type_name, *p, site)],
     }
 }
 
-pub fn panic_signature(phase: Phase, site: &str) -> String {
-    format!("panic:{}:{site}", phase.tag())
+pub fn panic_signature(type_name: &str, phase: Phase, site: &str) -> String {
+    format!("{type_name}:panic:{}:{site}", phase.tag())
+}
+
+/// Every signature an input produces, across all value types.  Also the
+/// invariant the shrinker preserves.
+pub fn signatures(bytes: &[u8]) -> Vec<String> {
+    let mut out = Vec::new();
+    run_all(bytes, &mut |name, outcome| {
+        out.extend(outcome_signatures(name, &outcome));
+    });
+    out
+}
+
+/// The value type named in a signature's first field.
+pub fn value_type_of(signature: &str) -> &str {
+    signature.split(':').next().unwrap_or("")
+}
+
+/// Render a case under the value type named by `type_name`.
+pub fn describe_as(type_name: &str, bytes: &[u8]) -> String {
+    if type_name == <value::Bits as FuzzValue>::NAME {
+        describe(&decode::<value::Bits>(bytes))
+    } else {
+        describe(&decode::<u64>(bytes))
+    }
 }
 
 /// Reproducible input generation, so a seed names a run.
@@ -808,12 +830,13 @@ impl Rng {
 }
 
 /// Human-readable rendering of a case, for a failure report and for replay.
-pub fn describe(case: &Case) -> String {
+pub fn describe<V: FuzzValue>(case: &Case<V>) -> String {
     let mut s = String::new();
+    s.push_str(&format!("values:   {}\n", V::NAME));
     s.push_str(&format!("expr:     {}\n", case.expr));
     s.push_str(&format!("alphabet: {}\n", case.alphabet));
     for (i, (m, b)) in case.operands.iter().zip(&case.builds).enumerate() {
-        let sh: Shape = shape_of_map(m);
+        let sh: Shape<V> = shape_of_map(m);
         s.push_str(&format!(
             "operand {}: {:?}\n  {}\n",
             (b'a' + i as u8) as char,
@@ -825,7 +848,7 @@ pub fn describe(case: &Case) -> String {
 }
 
 /// Values of each operand, for a report that only needs the settled part.
-pub fn operand_values(case: &Case) -> Vec<Values> {
+pub fn operand_values<V: FuzzValue>(case: &Case<V>) -> Vec<Values<V>> {
     case.operands
         .iter()
         .map(|m| shape::values_of_shape(&shape_of_map(m)))

@@ -122,37 +122,104 @@ baseline in an interesting way — the baseline is what everyone is compared
 against. `meet-distributes-over-join` has no baseline to be fooled by: it puts
 the operands on different sides of a meet and notices.
 
-### `u64` is not a lattice, and that bounds what this fuzzer can see
+### Two value types, and the difference between them is a measurement
 
-The value type is `u64`, and `u64`'s instances in `pathmap::ring` are marked
-`//GOAT trash` for good reason. `pjoin` is `left_biased_pjoin`, `pmeet` is
-`Identity(SELF_IDENT)` — **both are the function "return the left operand"**, so
-`a | b == a & b` for every pair. In a lattice `a & b == a | b` forces `a == b`,
-so the impl effectively asserts `1 == 2`. `bin/alg_lattice_check` prints the
-table, next to `bool`, which is a genuine two-element Boolean algebra.
+Every case runs twice, once per value type, and signatures are prefixed with the
+type (`u64:values:pw1`, `bits:law:join-associative`). That is the fuzzer's main
+discriminator:
 
-Two consequences, and they are limits on this harness rather than on the crate:
+* **`bits`** is a 64-bit set under `|`, `&` and `& !`, with an empty result
+  collapsing to bottom — i.e. to an absent value, the convention `SetLattice`'s
+  documentation already states. A genuine Boolean algebra, so every lattice
+  identity holds and a law that fails here is a real defect. It lives in
+  `src/algebraic/value.rs` rather than in `pathmap`, because a value type defined
+  outside the crate is what a real caller has.
 
-1. **`AlgebraicResult::Element` is unreachable** from `u64`'s `pjoin` and
-   `pmeet`: every arm returns `Identity`. So the code that handles *a combined
-   value that is a new value* — allocating it, storing it, propagating it — never
-   runs. That is a large part of what the algebra does, and this fuzzer does not
-   currently reach it.
+* **`u64`** is what the rest of this crate's fuzzing uses, and its instances in
+  `pathmap::ring` are **not a lattice**: `pjoin` is `left_biased_pjoin`, `pmeet`
+  is `Identity(SELF_IDENT)` — both return the left operand, so `a | b == a & b`
+  for every pair, which in a lattice forces `a == b`. It is kept because it is
+  what callers use today, and because it reaches `Identity`-heavy paths that the
+  lawful type does not.
 
-2. **Several laws are weaker than they should be.** The three checked on paths
-   only would be value-level laws under a real lattice, and the three `laws.rs`
-   lists as "not laws" *are* laws in any distributive lattice. Both lists are a
-   record of what `u64` costs, not of anything the algebra does wrong.
+A finding under `u64` alone is an artefact. One under both — or under `bits`
+alone — is a defect. `alg_fuzz` prints the split at the end of every run:
 
-`pathmap::utils::ByteMask` already implements both traits properly by delegating
-to bitwise operations on `[u64; 4]`, so it would lift both limits. Using it means
-making the harness generic over the value type, which it is not yet — the single
-most valuable thing to do to this fuzzer next.
+```
+by value type -- bits is lawful, u64 is not:
+  finding                                       u64       bits
+  law:absorb-join-meet                           82          -
+  law:join-associative                         3131         12
+  law:join-distributes-over-meet               2077          1
+  law:meet-distributes-over-join               1603          -
+  law:sym-diff-is-join-minus-meet              6684          5
+  panic:build:line_list_node.rs:1745          13476      13476
+  values:model                                 1258          2
+  values:pw1                                  30849      36071
+  ...
+```
 
-Distinguishing a real finding from an artefact of this is the main way to write a
-harness that reports its own mistakes as crate defects. It happened three times
-while this one was being built — twice in the shape recognisers (see "Harness
-invariants") and once in the write-up of finding 8.
+Read the counts, not just the membership. `law:join-associative` failing 3131
+times under `u64` and 12 under `bits` is **one** defect amplified by the value
+type: under a commutative join, picking the wrong operand is invisible except
+where one operand already contains the other, so only that residue survives. And
+every one of those residues shrinks to a value present on one side of the
+identity and *absent* on the other — which is finding 4, a lost value, not a
+misplaced one.
+
+So far: five findings are `u64`-only, nothing is `bits`-only, and `values:model`
+drops from 1258 to 2 — the flat reference model and the trie agree on values
+almost everywhere once the value algebra is lawful.
+
+### Why a bitmask and not some other lawful lattice
+
+Lawfulness is not sufficient, and this is the part worth remembering.
+`max`/`min` on a total order is a perfectly good distributive lattice, every
+identity holds, and it is **useless here**: `max(a, b)` and `min(a, b)` are
+always one of the operands, so they can only return
+`AlgebraicResult::Identity`, and every code path that allocates and stores a
+genuinely combined value stays unreachable. `a | b` is a new value, so a bitmask
+reaches them. `bin/alg_lattice_check` prints the table:
+
+```
+  type           pjoin   pmeet  psubtract
+  u64              NO      NO         yes     <- and PR #115 makes that NO too
+  bool             NO      NO         NO
+  MinMax           NO      NO         NO      <- lawful, still useless
+  Bits             yes     yes        yes
+  ByteMask         yes     yes        yes
+```
+
+`pathmap::utils` already implements exactly this for `[u64; 4]` and `ByteMask`,
+via `bitmask_algebraic_result`; `Bits` is the same construction at 64 bits.
+
+### What the lawful type unlocked
+
+Four identities are checked **only** for a lawful value type, in
+`laws::lawful_only` — De Morgan for relative complement both ways,
+`a - b == a - (a & b)`, and symmetric difference being associative on *values*
+rather than only on paths. Each fails for `u64`, for the same reason everything
+else does. **All four hold.** They are the strongest laws the harness has; if one
+starts firing, that is news.
+
+The `Level::Paths` laws are also promoted to `Level::Values` for a lawful type,
+so commutativity of join and meet is checked on values there.
+
+### One thing the lawful type cannot do
+
+`OverlayZipper`'s mapping has signature
+`Fn(Option<&'a AV>, Option<&'a BV>) -> Option<&'a OutV>` — it returns a
+*reference*, so it has nowhere to put a value it would have to create. The
+module's own comment says as much. So an overlay can stand in for a join only
+when the join never creates anything, and for a real lattice it cannot be a join
+at all. The strategy therefore *declines* for `bits` rather than answering
+wrongly, which is why `pw5` applies to fewer cases there. That is a limitation of
+the zipper, not a defect, and not reported as one.
+
+Note that declining is what keeps route numbers comparable. An earlier version
+shortened the join strategy table for such types, which silently renumbered every
+later route — so `pw4` and `pw5` meant different strategy mixes under the two
+types, and comparing their findings compared different things.
 
 ## Generated operands
 
@@ -270,7 +337,7 @@ signature onto one of them.
    `join_into_dyn` returns `AlgebraicStatus::Element` while doing so, so a caller
    cannot detect it from the status.
 
-**And one that is not a defect at all.** `zipper_sym_diff` cancels a coincident
+**And one that is not a defect at all, which is now visible as such.** `zipper_sym_diff` cancels a coincident
 path carrying *different* values; `fuse`'s `Xor` keeps the left value. It is
 tempting to call that two conventions for symmetric difference, and an earlier
 version of this document did. That was wrong: `(a | b) - (a & b)` and
@@ -355,7 +422,8 @@ disagrees with the rest, suspect the route first.
 | `src/algebraic/expr.rs` | the expression language and the shape recognisers |
 | `src/algebraic/routes.rs` | the routes, and one arm per strategy |
 | `src/algebraic/laws.rs` | the identities, and the ones deliberately absent |
-| `src/algebraic/model.rs` | flat `BTreeMap` semantics |
+| `src/algebraic/model.rs` | flat `BTreeMap` semantics, delegating to the value algebra |
+| `src/algebraic/value.rs` | the `FuzzValue` trait and the lawful `Bits` type |
 | `src/algebraic/shape.rs` | what "the same result" means |
 | `src/bin/alg_fuzz.rs` | the driver: generation, replay, shrinking, reporting |
 | `src/bin/alg_bug_repros.rs` | the findings as plain `pathmap` calls |

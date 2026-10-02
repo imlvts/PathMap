@@ -14,7 +14,13 @@
 //! `pmeet` is left-biased.  A harness that reports its own mistakes as findings
 //! is worse than no harness, so the recognisers are pinned here.
 
-use differential::algebraic::{self, expr::{Expr, Op}, known, signatures};
+use differential::algebraic::{
+    self,
+    expr::{Expr, Op},
+    known, signatures,
+    value::{Bits, FuzzValue},
+};
+use pathmap::ring::{AlgebraicResult, DistributiveLattice, Lattice};
 
 /// Collect the signatures an input produces that `KNOWN` does not document.
 ///
@@ -163,6 +169,87 @@ fn dnf_rejects_non_monotone_operators() {
     for op in [Op::Subtract, Op::SymDiff, Op::Restrict] {
         assert_eq!(Expr::bin(op, var(0), var(1)).dnf(), None, "{op:?}");
     }
+}
+
+/// The lawful value type has to actually be lawful, or every "real defect" the
+/// comparison attributes to the crate could be its fault instead.
+#[test]
+fn bits_is_a_boolean_algebra() {
+    let sample: Vec<Bits> = (1u64..16).map(Bits).collect();
+    let r = |x: AlgebraicResult<Bits>, l: Bits, rr: Bits| match x {
+        AlgebraicResult::Element(v) => Some(v),
+        // SELF_IDENT == 1
+        AlgebraicResult::Identity(m) => Some(if m & 1 != 0 { l } else { rr }),
+        AlgebraicResult::None => None,
+    };
+    let raw = |v: Option<Bits>| v.map(|b| b.0).unwrap_or(0);
+
+    for &a in &sample {
+        for &b in &sample {
+            // The operations are the bitwise ones, and bottom is absence.
+            assert_eq!(raw(r(a.pjoin(&b), a, b)), a.0 | b.0, "join {a:?} {b:?}");
+            assert_eq!(raw(r(a.pmeet(&b), a, b)), a.0 & b.0, "meet {a:?} {b:?}");
+            assert_eq!(raw(r(a.psubtract(&b), a, b)), a.0 & !b.0, "sub {a:?} {b:?}");
+            // Commutative, which is exactly what makes the u64 value bias
+            // invisible here and so must hold.
+            assert_eq!(a.0 | b.0, b.0 | a.0);
+            assert_eq!(a.0 & b.0, b.0 & a.0);
+            // The two formulas for symmetric difference agree -- the identity
+            // whose failure under u64 started this.
+            assert_eq!((a.0 | b.0) & !(a.0 & b.0), (a.0 & !b.0) | (b.0 & !a.0));
+            for &c in &sample {
+                // Distributive, both ways round.
+                assert_eq!(a.0 & (b.0 | c.0), (a.0 & b.0) | (a.0 & c.0));
+                assert_eq!(a.0 | (b.0 & c.0), (a.0 | b.0) & (a.0 | c.0));
+            }
+        }
+    }
+}
+
+/// The reason for preferring a bitmask over some other lawful lattice: it has to
+/// produce values that are not simply one of the operands, or the code that
+/// stores a combined value is never reached.  See `bin/alg_lattice_check`.
+#[test]
+fn bits_reaches_the_element_path_and_u64_does_not() {
+    let bits: Vec<Bits> = (1u64..16).map(Bits).collect();
+    let mut bits_join_element = false;
+    let mut bits_meet_element = false;
+    for &a in &bits {
+        for &b in &bits {
+            bits_join_element |= matches!(a.pjoin(&b), AlgebraicResult::Element(_));
+            bits_meet_element |= matches!(a.pmeet(&b), AlgebraicResult::Element(_));
+        }
+    }
+    assert!(bits_join_element, "Bits::pjoin must be able to return Element");
+    assert!(bits_meet_element, "Bits::pmeet must be able to return Element");
+
+    // u64 cannot, which is the coverage gap the lawful type exists to close.
+    for a in 1u64..8 {
+        for b in 1u64..8 {
+            assert!(!matches!(a.pjoin(&b), AlgebraicResult::Element(_)));
+            assert!(!matches!(a.pmeet(&b), AlgebraicResult::Element(_)));
+        }
+    }
+}
+
+/// Route `k` must mean the same strategies under every value type, or the
+/// per-type comparison compares different things.
+#[test]
+fn route_numbering_is_the_same_for_every_value_type() {
+    for op in Op::ALL {
+        let n = algebraic::routes::strategies(op).len();
+        for k in 0..algebraic::routes::POINTWISE_ROUTES {
+            // `strategies` takes no type parameter precisely so this holds; the
+            // assertion is here to stop that being reintroduced.
+            assert_eq!(k % n, k % algebraic::routes::strategies(op).len());
+        }
+    }
+    assert!(<Bits as FuzzValue>::LAWFUL);
+    assert!(!<u64 as FuzzValue>::LAWFUL);
+    // The overlay join strategy cannot work for a type whose join creates
+    // values, because OverlayZipper's mapping returns a reference.
+    assert!(!<Bits as FuzzValue>::JOIN_PICKS_LEFT);
+    assert!(<u64 as FuzzValue>::JOIN_PICKS_LEFT);
 }
 
 #[test]

@@ -38,6 +38,7 @@ use pathmap::zipper::{
 use super::expr::{Expr, Op};
 use super::model;
 use super::shape::{shape_of_map, shape_of_zipper, values_of_shape, Shape, Values, ESCAPED_ROOT, TRUNCATED};
+use super::value::FuzzValue;
 
 /// Names of the per-operator strategies, in the order route `k % n` indexes
 /// them.  Kept as tables so a route's name can say which strategy it used for
@@ -49,6 +50,16 @@ pub const SUBTRACT_STRATEGIES: &[&str] = &["map", "subtract_into", "zipper_subtr
 pub const SYM_DIFF_STRATEGIES: &[&str] = &["zipper_sym_diff", "join_minus_meet"];
 pub const RESTRICT_STRATEGIES: &[&str] = &["map", "wz_restrict"];
 
+/// The strategy table is the same for every value type, so route `k` means the
+/// same thing under each of them.
+///
+/// That matters more than it looks.  An earlier version shortened the join table
+/// for value types that cannot use the `OverlayZipper` strategy, which silently
+/// renumbered every later route -- so `pw4` and `pw5` meant different strategy
+/// mixes under `u64` and under `bits`, and comparing their findings across the
+/// two types was comparing different things.  A strategy that does not apply to
+/// a value type now *declines* instead, which leaves the numbering alone and
+/// simply makes that route absent for that type.
 pub fn strategies(op: Op) -> &'static [&'static str] {
     match op {
         Op::Join => JOIN_STRATEGIES,
@@ -145,13 +156,13 @@ fn collect_ops(e: &Expr, out: &mut Vec<Op>) {
 
 /// What a route produced.  `shape` is `None` for a route that cannot represent
 /// dangling paths, which is only [`Route::Model`].
-pub struct Outcome {
-    pub values: Values,
-    pub shape: Option<Shape>,
+pub struct Outcome<V: FuzzValue> {
+    pub values: Values<V>,
+    pub shape: Option<Shape<V>>,
 }
 
-impl Outcome {
-    fn from_map(m: &PathMap<u64>) -> Outcome {
+impl<V: FuzzValue> Outcome<V> {
+    fn from_map(m: &PathMap<V>) -> Outcome<V> {
         let shape = shape_of_map(m);
         Outcome { values: values_of_shape(&shape), shape: Some(shape) }
     }
@@ -159,9 +170,9 @@ impl Outcome {
 
 /// Evaluate `e` over `operands` by `route`, or `None` if the route does not
 /// apply to this expression's shape.
-pub fn eval(route: Route, e: &Expr, operands: &[PathMap<u64>]) -> Option<Outcome> {
+pub fn eval<V: FuzzValue>(route: Route, e: &Expr, operands: &[PathMap<V>]) -> Option<Outcome<V>> {
     match route {
-        Route::Pointwise(k) => Some(Outcome::from_map(&pointwise(k, e, operands))),
+        Route::Pointwise(k) => pointwise(k, e, operands).map(|m| Outcome::from_map(&m)),
         Route::Ternary => ternary(e, operands).map(|m| Outcome::from_map(&m)),
         Route::Nary => nary(e, operands, false).map(|m| Outcome::from_map(&m)),
         Route::NaryPoly => nary(e, operands, true).map(|m| Outcome::from_map(&m)),
@@ -169,7 +180,7 @@ pub fn eval(route: Route, e: &Expr, operands: &[PathMap<u64>]) -> Option<Outcome
         Route::Fuse => fuse(e, operands, false).map(|m| Outcome::from_map(&m)),
         Route::FuseDistributed => fuse(e, operands, true).map(|m| Outcome::from_map(&m)),
         Route::Model => {
-            let vals: Vec<Values> =
+            let vals: Vec<Values<V>> =
                 operands.iter().map(|m| values_of_shape(&shape_of_map(m))).collect();
             Some(Outcome { values: model::eval(e, &vals), shape: None })
         }
@@ -178,12 +189,14 @@ pub fn eval(route: Route, e: &Expr, operands: &[PathMap<u64>]) -> Option<Outcome
 
 // ---------------------------------------------------------------- pointwise
 
-fn pointwise(k: usize, e: &Expr, operands: &[PathMap<u64>]) -> PathMap<u64> {
+/// `None` when the strategy route `k` selects for some operator in `e` does not
+/// apply to this value type.
+fn pointwise<V: FuzzValue>(k: usize, e: &Expr, operands: &[PathMap<V>]) -> Option<PathMap<V>> {
     match e {
-        Expr::Var(i) => operands[*i].clone(),
+        Expr::Var(i) => Some(operands[*i].clone()),
         Expr::Bin(op, l, r) => {
-            let a = pointwise(k, l, operands);
-            let b = pointwise(k, r, operands);
+            let a = pointwise(k, l, operands)?;
+            let b = pointwise(k, r, operands)?;
             apply(*op, k, &a, &b)
         }
     }
@@ -191,9 +204,9 @@ fn pointwise(k: usize, e: &Expr, operands: &[PathMap<u64>]) -> PathMap<u64> {
 
 /// One operator, one strategy.  Every arm is a different code path in the
 /// crate, not a different way of calling the same one.
-pub fn apply(op: Op, k: usize, a: &PathMap<u64>, b: &PathMap<u64>) -> PathMap<u64> {
+pub fn apply<V: FuzzValue>(op: Op, k: usize, a: &PathMap<V>, b: &PathMap<V>) -> Option<PathMap<V>> {
     let n = strategies(op).len();
-    match (op, k % n) {
+    Some(match (op, k % n) {
         // -- join
         (Op::Join, 0) => a.join(b),
         (Op::Join, 1) => {
@@ -236,11 +249,17 @@ pub fn apply(op: Op, k: usize, a: &PathMap<u64>, b: &PathMap<u64>) -> PathMap<u6
             out
         }
         (Op::Join, 5) => {
+            // Declines rather than answering wrongly: see
+            // `FuzzValue::JOIN_PICKS_LEFT`.
+            if !V::JOIN_PICKS_LEFT {
+                return None;
+            }
             // `OverlayZipper`'s default mapping is `a.or(b)`, which is the same
-            // left bias `u64`'s `pjoin` has, so the virtual trie it walks
-            // should be exactly the join.  It never builds a trie, so it has to
-            // be materialised to be composed into a larger expression; the walk
-            // records dangling paths too, so nothing is lost in the round trip.
+            // bias a left-picking `pjoin` has, so for such a value type the
+            // virtual trie it walks is exactly the join.  Only reachable when
+            // `V::JOIN_PICKS_LEFT`; see `strategies`.  It never builds a trie, so
+            // it has to be materialised to be composed into a larger expression;
+            // the walk records dangling paths too, so nothing is lost.
             let overlay = OverlayZipper::new(a.read_zipper(), b.read_zipper());
             materialize(overlay)
         }
@@ -329,7 +348,7 @@ pub fn apply(op: Op, k: usize, a: &PathMap<u64>, b: &PathMap<u64>) -> PathMap<u6
         }
 
         _ => unreachable!("strategy index out of range for {op:?}"),
-    }
+    })
 }
 
 /// Walk a zipper over a virtual trie and build the real trie it describes.
@@ -337,9 +356,9 @@ pub fn apply(op: Op, k: usize, a: &PathMap<u64>, b: &PathMap<u64>) -> PathMap<u6
 /// `create_path` is what keeps this faithful: a path with no value still has to
 /// appear in the output, or materialising would quietly erase exactly the
 /// dangling structure the comparison is trying to detect.
-fn materialize<Z>(mut z: Z) -> PathMap<u64>
+fn materialize<V: FuzzValue, Z>(mut z: Z) -> PathMap<V>
 where
-    Z: ZipperMoving + ZipperPath + ZipperValues<u64>,
+    Z: ZipperMoving + ZipperPath + ZipperValues<V>,
 {
     let shape = shape_of_zipper(&mut z);
     let mut out = PathMap::new();
@@ -353,7 +372,7 @@ where
             wz.descend_to(p);
             match v {
                 Some(v) => {
-                    wz.set_val(*v);
+                    wz.set_val(v.clone());
                 }
                 None => {
                     wz.create_path();
@@ -367,7 +386,7 @@ where
 // -------------------------------------------------------- whole-expression
 
 /// Chain of exactly three operands through the `*3` entry points.
-fn ternary(e: &Expr, operands: &[PathMap<u64>]) -> Option<PathMap<u64>> {
+fn ternary<V: FuzzValue>(e: &Expr, operands: &[PathMap<V>]) -> Option<PathMap<V>> {
     let (op, idx) = e.chain()?;
     if idx.len() != 3 {
         return None;
@@ -396,7 +415,7 @@ fn ternary(e: &Expr, operands: &[PathMap<u64>]) -> Option<PathMap<u64>> {
 /// array) and the tuple form (`ZipperMergeF::*_n`, which routes through the
 /// `PolyZipper`-derived enum).  They are separate monomorphisations of the
 /// merge engine and are worth distinguishing, so `poly` selects between them.
-fn nary(e: &Expr, operands: &[PathMap<u64>], poly: bool) -> Option<PathMap<u64>> {
+fn nary<V: FuzzValue>(e: &Expr, operands: &[PathMap<V>], poly: bool) -> Option<PathMap<V>> {
     let (op, idx) = e.chain()?;
     if op == Op::Restrict {
         return None;
@@ -409,7 +428,7 @@ fn nary(e: &Expr, operands: &[PathMap<u64>], poly: bool) -> Option<PathMap<u64>>
         // run time.  The tuple form additionally has one impl per arity.
         macro_rules! slice_arm {
             ($n:literal) => {{
-                let mut zs: [ReadZipperUntracked<'_, '_, u64>; $n] =
+                let mut zs: [ReadZipperUntracked<'_, '_, V>; $n] =
                     core::array::from_fn(|i| operands[idx[i]].read_zipper());
                 match op {
                     Op::Join => zipper_n_join(&mut zs, &mut wz),
@@ -463,9 +482,9 @@ fn nary(e: &Expr, operands: &[PathMap<u64>], poly: bool) -> Option<PathMap<u64>>
 ///
 /// Declines an expression containing `restrict`: `FuseOp` has no counterpart,
 /// and restrict is not a lattice operation.
-fn fuse(e: &Expr, operands: &[PathMap<u64>], distributed: bool) -> Option<PathMap<u64>> {
+fn fuse<V: FuzzValue>(e: &Expr, operands: &[PathMap<V>], distributed: bool) -> Option<PathMap<V>> {
     let (prog, out) = to_fuse_expr(e)?.compile();
-    let inputs: Vec<&PathMap<u64>> = operands.iter().collect();
+    let inputs: Vec<&PathMap<V>> = operands.iter().collect();
     let mut results = if distributed {
         prog.eval_distributed(&inputs, &[out])
     } else {
@@ -504,7 +523,7 @@ fn to_fuse_expr(e: &Expr) -> Option<FuseExpr> {
 /// becomes a two-zipper call with the masks renumbered, not a four-zipper call
 /// with two unused slots -- an unused slot would change what the traversal
 /// prunes on and make the route test something else.
-fn dnf(e: &Expr, operands: &[PathMap<u64>]) -> Option<PathMap<u64>> {
+fn dnf<V: FuzzValue>(e: &Expr, operands: &[PathMap<V>]) -> Option<PathMap<V>> {
     let clauses = e.dnf()?;
     let vars = e.vars();
     if vars.is_empty() || vars.len() > super::expr::MAX_VARS || clauses.len() > super::expr::MAX_CLAUSES {
@@ -526,7 +545,7 @@ fn dnf(e: &Expr, operands: &[PathMap<u64>]) -> Option<PathMap<u64>> {
         let mut wz = out.write_zipper();
         macro_rules! dnf_arm {
             ($n:literal, $m:literal) => {{
-                let mut zs: [ReadZipperUntracked<'_, '_, u64>; $n] =
+                let mut zs: [ReadZipperUntracked<'_, '_, V>; $n] =
                     core::array::from_fn(|i| operands[vars[i]].read_zipper());
                 let cs: [Clause<$n>; $m] = core::array::from_fn(|i| Clause::from_mask(packed[i]));
                 zipper_merge_dnf(&mut zs, cs, &mut wz);

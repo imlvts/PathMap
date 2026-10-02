@@ -10,47 +10,30 @@
 //! machinery, which keeps this file declarative and means a law automatically
 //! inherits whatever the expression evaluator can do.
 //!
-//! # Why some laws are weakened here, and why that is the value type's fault
+//! # Strength depends on the value type
 //!
-//! `u64`'s lattice instances are degenerate.  `pjoin` is `left_biased_pjoin`
-//! and `pmeet` is `Identity(SELF_IDENT)`: both return the left operand, so
-//! `a | b == a & b` for every pair.  In a lattice `a & b == a | b` forces
-//! `a == b`, so the impl asserts `1 == 2` and is not a lattice -- `pathmap::ring`
-//! marks it `//GOAT trash`.
+//! [`laws`] is parameterised by the value type, and returns a *stronger* set for
+//! one whose instances actually form a distributive lattice with a relative
+//! complement -- see [`FuzzValue::LAWFUL`].  Three things change:
 //!
-//! Everything below that looks like a weakened law follows from that, and from
-//! nothing deeper.  The lattice identities themselves are not in doubt:
+//! * The laws marked [`Level::Paths`] are promoted to [`Level::Values`].  They
+//!   are weakened for `u64` only because its `pjoin` and `pmeet` both return the
+//!   left operand, so swapping the operands swaps the result's value and
+//!   commutativity cannot hold on values there.
 //!
-//! * The laws marked [`Level::Paths`] would be ordinary value-level laws under a
-//!   real lattice.  They are weakened because with both operations returning the
-//!   left operand, swapping the operands swaps the result's value, so
-//!   commutativity cannot hold on values here.
+//! * Three further identities are added, listed in [`lawful_only`].  They are
+//!   laws in any distributive lattice and fail for `u64`, again because join and
+//!   meet have collapsed into one function.
 //!
-//! * The three identities listed below as "not laws" **are** laws in any
-//!   distributive lattice.  They fail only because join and meet have collapsed
-//!   into one function and `psubtract` is `None` exactly on equality.
+//! * Symmetric difference becomes associative on values, not merely on paths.
 //!
-//! So this list is a record of what `u64` costs, not of anything the algebra
-//! does wrong.  `bin/alg_lattice_check.rs` prints the tables, and
-//! `../../ALGEBRAIC_FUZZING.md` explains what it costs in coverage -- chiefly
-//! that `AlgebraicResult::Element` is unreachable from `u64`'s `pjoin` and
-//! `pmeet`, so the code that stores a genuinely *combined* value never runs.
-//!
-//! # Identities absent for that reason
-//!
-//! Listed so nobody adds them back without also changing the value type:
-//!
-//! * `a - (b | c) == (a - b) & (a - c)`.  `b | c` carries `b`'s value where both
-//!   are present, so the left side keeps a path whose value matches `c` but not
-//!   `b`, while the right side drops it.
-//! * `a - b == a - (a & b)`.  `a & b` carries *`a`'s* value -- because `pmeet`
-//!   ignores its argument -- so the right side drops every shared path
-//!   regardless of value, while the left side drops only the equal ones.
-//! * `(a ^ b) ^ c == a ^ (b ^ c)` on values.  A path in all three cancels in the
-//!   inner operation either way, leaving `c`'s value on the left and `a`'s on
-//!   the right.  Checked on paths, where it does hold.
+//! So the difference between the two sets is a measurement: a law that holds for
+//! `bits` and fails for `u64` is telling you about `u64`, and one that fails for
+//! `bits` is telling you about the crate.  That split is the whole reason for
+//! running both.
 
 use super::expr::{Expr, Op};
+use super::value::FuzzValue;
 
 /// Operand slot holding the empty trie, appended after the case's own
 /// operands so identities can mention it.  See [`LAW_OPERANDS`].
@@ -94,7 +77,23 @@ fn r(a: Expr, b: Expr) -> Expr {
     Expr::bin(Op::Restrict, a, b)
 }
 
-pub fn laws() -> Vec<Law> {
+/// The laws to check for value type `V`.
+///
+/// For a lawful `V` every `Paths` level is promoted to `Values` and
+/// [`lawful_only`] is appended.
+pub fn laws<V: FuzzValue>() -> Vec<Law> {
+    let mut out = base();
+    if V::LAWFUL {
+        for law in &mut out {
+            law.level = Level::Values;
+        }
+        out.extend(lawful_only());
+    }
+    out
+}
+
+/// Identities that hold whatever the value type.
+fn base() -> Vec<Law> {
     use Level::{Paths, Values};
     let (a, b, c, e) = (0usize, 1usize, 2usize, EMPTY);
     vec![
@@ -193,6 +192,51 @@ pub fn laws() -> Vec<Law> {
             name: "majority-is-pairwise-meets",
             lhs: j(j(m(v(a), v(b)), m(v(a), v(c))), m(v(b), v(c))),
             rhs: j(m(v(a), v(b)), j(m(v(a), v(c)), m(v(b), v(c)))),
+            level: Values,
+        },
+    ]
+}
+
+/// Identities that need the value type to be a real distributive lattice with a
+/// relative complement.
+///
+/// Each of these fails for `u64`, and each failure is explained by the same
+/// thing: `pjoin` and `pmeet` both return the left operand, so `a | b == a & b`,
+/// and `psubtract` is `None` exactly on equality.
+fn lawful_only() -> Vec<Law> {
+    use Level::Values;
+    let (a, b, c) = (0usize, 1usize, 2usize);
+    vec![
+        // De Morgan for relative complement.  Fails for `u64` because `b | c`
+        // carries `b`'s value where both are present, so the left side keeps a
+        // path whose value matches `c` but not `b`.
+        Law {
+            name: "subtract-over-join",
+            lhs: s(v(a), j(v(b), v(c))),
+            rhs: m(s(v(a), v(b)), s(v(a), v(c))),
+            level: Values,
+        },
+        Law {
+            name: "subtract-over-meet",
+            lhs: s(v(a), m(v(b), v(c))),
+            rhs: j(s(v(a), v(b)), s(v(a), v(c))),
+            level: Values,
+        },
+        // Subtracting the overlap is the same as subtracting the whole.  Fails
+        // for `u64` because `a & b` carries *`a`'s* value, so the right side
+        // drops every shared path rather than only the equal ones.
+        Law {
+            name: "subtract-is-subtract-meet",
+            lhs: s(v(a), v(b)),
+            rhs: s(v(a), m(v(a), v(b))),
+            level: Values,
+        },
+        // Symmetric difference is the XOR of a Boolean ring, so it is
+        // associative on values and not merely on paths.
+        Law {
+            name: "sym-diff-associative",
+            lhs: x(x(v(a), v(b)), v(c)),
+            rhs: x(v(a), x(v(b), v(c))),
             level: Values,
         },
     ]
