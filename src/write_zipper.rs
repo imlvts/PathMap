@@ -1395,12 +1395,12 @@ impl <'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> WriteZipperC
             self.focus_stack.to_root();
             self.focus_stack.root_mut()
         } else {
+            //A child that ends short of the focus is a node *above* the focus: the stack does not
+            // descend into an empty node (a dangling path, as `prune_path` can leave behind), so
+            // the focus key can run through one.  The focus then has no node of its own.
             match self.focus_stack.top_mut().unwrap().node_into_child_mut(node_key) {
-                Some((consumed_bytes, child_node)) => {
-                    debug_assert_eq!(consumed_bytes, node_key.len());
-                    Some(child_node)
-                },
-                None => None
+                Some((consumed_bytes, child_node)) if consumed_bytes == node_key.len() => Some(child_node),
+                _ => None
             }
         }
     }
@@ -7509,6 +7509,31 @@ mod tests {
             wz.graft_masked_branches(&o.read_zipper(), mask(b"abd"), false);
         }
         assert_eq!(keys(&m), ["cax", "cbx", "cdx", "d"]);
+    }
+
+    /// `graft_masked_branches` at a focus that `prune_path` just removed, below a zipper root that
+    /// survives as a dangling path.  The focus key then runs through that empty node, which the
+    /// node stack does not descend into; the branches must still land at the focus.
+    #[test]
+    fn graft_masked_branches_after_prune_path_below_root() {
+        let mut src = PathMap::<u64>::new();
+        for b in [0u8, 1, 3] { src.set_val_at(&[b], b as u64 + 1); }
+        let mut other = PathMap::<u64>::new();
+        other.set_val_at(&[0u8], 0);
+        other.set_val_at(&[0u8; 39], 0);
+        other.set_val_at(&[0u8; 7], 0);
+        let mut map = PathMap::<u64>::new();
+        {
+            let mut z = map.write_zipper_at_path(&[0u8, 0]);
+            z.descend_to(&[0u8, 0]);
+            z.graft_masked_branches(&other.read_zipper(), ByteMask::from_iter([0u8]), false);
+            z.graft_masked_branches(&PathMap::new().read_zipper(), ByteMask::from_iter([0u8, 1, 3]), true);
+            assert_eq!(z.prune_path(), 2);
+            assert!(!z.path_exists());
+            z.graft_masked_branches(&src.read_zipper(), ByteMask::from_iter([0u8, 1, 3]), false);
+        }
+        let got: Vec<(Vec<u8>, u64)> = map.iter().map(|(k, v)| (k.to_vec(), *v)).collect();
+        assert_eq!(got, vec![(vec![0, 0, 0, 0, 0], 1), (vec![0, 0, 0, 0, 1], 2), (vec![0, 0, 0, 0, 3], 4)]);
     }
 
     /// Joining child slots whose onward nodes are empty, as left by dropped head writers
