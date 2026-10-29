@@ -1972,13 +1972,15 @@ impl <'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> WriteZipperC
         };
 
         let self_focus = self.get_focus();
-        let src = match src_root_node {
+        let src = match src_root_node.filter(|node| !node.as_tagged().node_is_empty()) {
             Some(src) => src,
             None => {
-                let node_status = if self_focus.is_none() {
-                    AlgebraicStatus::None
-                } else {
+                //Joining nothing changes nothing, at a focus that exists.  Whether an empty node
+                // happens to be materialised below the focus must not matter.
+                let node_status = if self.path_exists() {
                     AlgebraicStatus::Identity
+                } else {
+                    AlgebraicStatus::None
                 };
                 return node_status.merge(val_status, true, true);
             }
@@ -2396,11 +2398,13 @@ impl <'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> WriteZipperC
     }
     /// See [WriteZipper::restricting]
     pub fn restricting<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) -> bool {
+        //Either side with nothing below its focus leaves `self` alone, whether or not an empty
+        // node happens to be materialised there
         let src = read_zipper.get_focus();
-        if src.is_none() {
+        if src.try_as_tagged().map_or(true, |node| node.node_is_empty()) {
             return false
         }
-        match self.get_focus().try_as_tagged() {
+        match self.get_focus().try_as_tagged().filter(|node| !node.node_is_empty()) {
             Some(self_node) => {
                 match src.as_tagged().prestrict_dyn(self_node) {
                     AlgebraicResult::Element(restricted) => self.graft_internal(Some(restricted)),
@@ -2466,9 +2470,9 @@ impl <'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> WriteZipperC
     pub fn take_map(&mut self, prune: bool) -> Option<PathMap<V, A>> {
         let root_val = self.remove_val(prune);
 
-        let root_node = self.take_focus(prune);
+        //An empty node left at the focus (e.g. by `create_path` or `remove_val`) is nothing to take
+        let root_node = self.take_focus(prune).filter(|node| !node.as_tagged().node_is_empty());
 
-        self.get_focus().into_option();
         if root_node.is_some() || root_val.is_some() {
             Some(PathMap::new_with_root_in(root_node, root_val, self.alloc.clone()))
         } else {
