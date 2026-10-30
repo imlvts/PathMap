@@ -54,6 +54,8 @@ impl PrefixPos {
 /// ```
 #[derive(Clone)]
 pub struct PrefixZipper<'prefix, Z> {
+    /// Identifies the zipper in traces, see [crate::trace]
+    uid: crate::trace::ZipperUid,
     path: Vec<u8>,
     source: Z,
     prefix: Cow<'prefix, [u8]>,
@@ -78,6 +80,7 @@ impl<'prefix, Z>  PrefixZipper<'prefix, Z>
             PrefixPos::Prefix { valid: 0 }
         };
         Self {
+            uid: crate::trace::new_uid!(PrefixZipper),
             path: Vec::new(),
             source,
             prefix,
@@ -234,12 +237,14 @@ impl<'prefix, Z> ZipperConcrete for PrefixZipper<'prefix, Z>
         Z: ZipperConcrete
 {
     fn shared_node_id(&self) -> Option<u64> {
+        crate::trace::trace_point!(shared_node_id, self.uid);
         match self.position {
             PrefixPos::Source => self.source.shared_node_id(),
             _ => None,
         }
     }
     fn is_shared(&self) -> bool {
+        crate::trace::trace_point!(is_shared, self.uid);
         match self.position {
             PrefixPos::Source => self.source.is_shared(),
             _ => false,
@@ -252,6 +257,7 @@ impl<'prefix, Z, V> ZipperValues<V> for PrefixZipper<'prefix, Z>
         Z: ZipperValues<V>
 {
     fn val(&self) -> Option<&V> {
+        crate::trace::trace_point!(val, self.uid);
         if !self.position.is_source() {
             return None;
         }
@@ -264,6 +270,7 @@ impl<'prefix, Z, V> ZipperValuesAt<V> for PrefixZipper<'prefix, Z>
         Z: ZipperValuesAt<V>
 {
     fn val_at<K: AsRef<[u8]>>(&self, path: K) -> Option<&V> {
+        crate::trace::trace_point!(val_at, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         let path = self.adjust_lookup_path(path.as_ref())?;
         self.source.val_at(path)
     }
@@ -275,6 +282,7 @@ impl<'prefix, 'source, Z, V> ZipperReadOnlyValues<'source, V>
         Z: ZipperReadOnlyValues<'source, V>
 {
     fn get_val(&self) -> Option<&'source V> {
+        crate::trace::trace_point!(get_val, self.uid);
         //NOTE: This impl mirrors `val`
         if !self.position.is_source() {
             return None;
@@ -282,6 +290,7 @@ impl<'prefix, 'source, Z, V> ZipperReadOnlyValues<'source, V>
         self.source.get_val()
     }
     fn get_val_at<K: AsRef<[u8]>>(&self, path: K) -> Option<&'source V> {
+        crate::trace::trace_point!(get_val_at, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         let path = self.adjust_lookup_path(path.as_ref())?;
         self.source.get_val_at(path)
     }
@@ -295,6 +304,7 @@ impl<'prefix, 'source, Z, V> ZipperReadOnlyConditionalValues<'source, V>
     type WitnessT = Z::WitnessT;
     fn witness<'w>(&self) -> Self::WitnessT { self.source.witness() }
     fn get_val_with_witness<'w>(&self, witness: &'w Self::WitnessT) -> Option<&'w V> where 'source: 'w {
+        crate::trace::trace_point!(get_val_with_witness, self.uid);
         if !self.position.is_source() {
             return None;
         }
@@ -332,7 +342,9 @@ impl<'prefix, Z> Zipper for PrefixZipper<'prefix, Z>
     where
         Z: Zipper
 {
+    fn trace_uid(&self) -> u64 { self.uid.get() }
     fn path_exists(&self) -> bool {
+        crate::trace::trace_point!(path_exists, self.uid);
         match self.position {
             //The source stays at its root while the focus is in the prefix, and the prefix only
             // exists if the source's root does
@@ -342,12 +354,14 @@ impl<'prefix, Z> Zipper for PrefixZipper<'prefix, Z>
         }
     }
     fn is_val(&self) -> bool {
+        crate::trace::trace_point!(is_val, self.uid);
         match self.position {
             PrefixPos::Source => self.source.is_val(),
             _ => false,
         }
     }
     fn child_count(&self) -> usize {
+        crate::trace::trace_point!(child_count, self.uid);
         match self.position {
             PrefixPos::Prefix {..} => self.source.path_exists() as usize,
             PrefixPos::PrefixOff {..} => 0,
@@ -355,6 +369,7 @@ impl<'prefix, Z> Zipper for PrefixZipper<'prefix, Z>
         }
     }
     fn child_mask(&self) -> ByteMask {
+        crate::trace::trace_point!(child_mask, self.uid);
         match self.position {
             PrefixPos::Prefix { valid } if self.source.path_exists() => {
                 let byte = self.prefix[self.origin_depth + valid];
@@ -373,10 +388,12 @@ impl<'prefix, Z> ZipperMoving for PrefixZipper<'prefix, Z>
 {
     #[inline]
     fn depth(&self) -> usize {
+        crate::trace::trace_point!(depth, self.uid);
         self.path.len() - self.origin_depth
     }
 
     fn at_root(&self) -> bool {
+        crate::trace::trace_point!(at_root, self.uid);
         match self.position {
             PrefixPos::Prefix { valid } => valid == 0,
             PrefixPos::PrefixOff {..} => false,
@@ -386,10 +403,12 @@ impl<'prefix, Z> ZipperMoving for PrefixZipper<'prefix, Z>
 
     #[inline]
     fn focus_byte(&self) -> Option<u8> {
+        crate::trace::trace_point!(focus_byte, self.uid);
         self.path.last().cloned()
     }
 
     fn reset(&mut self) {
+        crate::trace::trace_point!(reset, self.uid);
         self.prepare_buffers();
         self.path.truncate(self.origin_depth);
         debug_assert_eq!(self.path, &self.prefix[..self.origin_depth]);
@@ -398,10 +417,12 @@ impl<'prefix, Z> ZipperMoving for PrefixZipper<'prefix, Z>
     }
 
     fn val_count(&self) -> usize {
+        crate::trace::trace_point!(val_count, self.uid);
         self.source.val_count()
     }
 
     fn descend_to_existing<K: AsRef<[u8]>>(&mut self, patho: K) -> usize {
+        crate::trace::trace_point!(descend_to_existing, self.uid, AsRef::<[u8]>::as_ref(&patho).as_ptr(), AsRef::<[u8]>::as_ref(&patho).len());
         if self.position.is_invalid() {
             return 0;
         }
@@ -423,6 +444,7 @@ impl<'prefix, Z> ZipperMoving for PrefixZipper<'prefix, Z>
     }
 
     fn descend_to<K: AsRef<[u8]>>(&mut self, path: K) {
+        crate::trace::trace_point!(descend_to, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         let mut path = path.as_ref();
         let existing = self.descend_to_existing(path);
         path = &path[existing..];
@@ -444,10 +466,12 @@ impl<'prefix, Z> ZipperMoving for PrefixZipper<'prefix, Z>
 
     #[inline]
     fn descend_to_byte(&mut self, k: u8) {
+        crate::trace::trace_point!(descend_to_byte, self.uid, k);
         self.descend_to([k])
     }
 
     fn descend_indexed_byte(&mut self, child_idx: usize) -> Option<u8> {
+        crate::trace::trace_point!(descend_indexed_byte, self.uid, child_idx);
         let mask = self.child_mask();
         let byte = mask.indexed_bit::<true>(child_idx)?;
         self.descend_to_byte(byte);
@@ -457,10 +481,12 @@ impl<'prefix, Z> ZipperMoving for PrefixZipper<'prefix, Z>
 
     #[inline]
     fn descend_first_byte(&mut self) -> Option<u8> {
+        crate::trace::trace_point!(descend_first_byte, self.uid);
         self.descend_indexed_byte(0)
     }
 
     fn descend_until_observed<Obs: PathObserver>(&mut self, obs: &mut Obs) -> bool {
+        crate::trace::trace_point!(descend_until_observed, self.uid);
         if self.position.is_invalid() {
             return false;
         }
@@ -473,6 +499,7 @@ impl<'prefix, Z> ZipperMoving for PrefixZipper<'prefix, Z>
 
     #[inline]
     fn to_next_sibling_byte(&mut self) -> Option<u8> {
+        crate::trace::trace_point!(to_next_sibling_byte, self.uid);
         if !self.position.is_source() {
             return None;
         }
@@ -483,6 +510,7 @@ impl<'prefix, Z> ZipperMoving for PrefixZipper<'prefix, Z>
 
     #[inline]
     fn to_prev_sibling_byte(&mut self) -> Option<u8> {
+        crate::trace::trace_point!(to_prev_sibling_byte, self.uid);
         if !self.position.is_source() {
             return None;
         }
@@ -491,6 +519,7 @@ impl<'prefix, Z> ZipperMoving for PrefixZipper<'prefix, Z>
         Some(byte)
     }
     fn ascend(&mut self, steps: usize) -> usize {
+        crate::trace::trace_point!(ascend, self.uid, steps);
         let ascended = match self.ascend_n(steps) {
             Err(remaining) => steps - remaining,
             Ok(()) => steps,
@@ -500,10 +529,12 @@ impl<'prefix, Z> ZipperMoving for PrefixZipper<'prefix, Z>
     }
     #[inline]
     fn ascend_byte(&mut self) -> bool {
+        crate::trace::trace_point!(ascend_byte, self.uid);
         self.ascend(1) == 1
     }
     #[inline]
     fn ascend_until(&mut self) -> usize {
+        crate::trace::trace_point!(ascend_until, self.uid);
         let Some(ascended) = self.ascend_until_n::<true>() else {
             return 0;
         };
@@ -512,6 +543,7 @@ impl<'prefix, Z> ZipperMoving for PrefixZipper<'prefix, Z>
     }
     #[inline]
     fn ascend_until_branch(&mut self) -> usize {
+        crate::trace::trace_point!(ascend_until_branch, self.uid);
         let Some(ascended) = self.ascend_until_n::<false>() else {
             return 0;
         };
@@ -525,6 +557,7 @@ impl<'prefix, Z> ZipperPath for PrefixZipper<'prefix, Z>
 {
     #[inline]
     fn path(&self) -> &[u8] {
+        crate::trace::trace_point!(path, self.uid);
         &self.path[self.origin_depth..]
     }
 }
@@ -534,9 +567,11 @@ impl<'prefix, Z> ZipperAbsolutePath for PrefixZipper<'prefix, Z>
     where Z: ZipperAbsolutePath
 {
     fn origin_path(&self) -> &[u8] {
+        crate::trace::trace_point!(origin_path, self.uid);
         &self.path
     }
     fn root_prefix_path(&self) -> &[u8] {
+        crate::trace::trace_point!(root_prefix_path, self.uid);
         &self.path[..self.origin_depth]
     }
 }
@@ -545,6 +580,7 @@ impl<'prefix, Z> ZipperIteration for PrefixZipper<'prefix, Z>
     where Z: ZipperIteration
 {
     fn to_next_val_observed<Obs: PathObserver>(&mut self, obs: &mut Obs) -> bool {
+        crate::trace::trace_point!(to_next_val_observed, self.uid);
         let found = 'search: {
             //Inside the source, delegate directly without checking the prefix or path existence.
             if !self.position.is_source() {
@@ -572,6 +608,7 @@ impl<'prefix, Z> ZipperIteration for PrefixZipper<'prefix, Z>
     }
 
     fn descend_last_path_observed<Obs: PathObserver>(&mut self, obs: &mut Obs) -> bool {
+        crate::trace::trace_point!(descend_last_path_observed, self.uid);
         if self.position.is_invalid() {
             return false;
         }
@@ -581,6 +618,7 @@ impl<'prefix, Z> ZipperIteration for PrefixZipper<'prefix, Z>
     }
 
     fn descend_first_k_path_observed<Obs: PathObserver>(&mut self, k: usize, obs: &mut Obs) -> bool {
+        crate::trace::trace_point!(descend_first_k_path_observed, self.uid, k);
         if k == 0 {
             return false;
         }
@@ -611,6 +649,7 @@ impl<'prefix, Z> ZipperIteration for PrefixZipper<'prefix, Z>
     }
 
     fn to_next_k_path_observed<Obs: PathObserver>(&mut self, k: usize, obs: &mut Obs) -> bool {
+        crate::trace::trace_point!(to_next_k_path_observed, self.uid, k);
         let depth = self.depth();
         if depth < k {
             self.reset();
@@ -660,6 +699,7 @@ impl<'prefix, Z, V> ZipperForking<V> for PrefixZipper<'prefix, Z>
 {
     type ReadZipperT<'a> = PrefixZipper<'prefix, Z::ReadZipperT<'a>> where Self: 'a;
     fn fork_read_zipper<'a>(&'a self) -> Option<<Self as ZipperForking<V>>::ReadZipperT<'a>> {
+        crate::trace::trace_point!(fork_read_zipper, self.uid);
         if !self.path_exists() { return None; }
         // Keep the path to the new root for absolute paths and reset. Only the
         // prefix after that root remains part of the child's traversal space.
@@ -669,6 +709,7 @@ impl<'prefix, Z, V> ZipperForking<V> for PrefixZipper<'prefix, Z>
             PrefixPos::PrefixOff {..} => return None,
         };
         Some(PrefixZipper {
+            uid: crate::trace::new_uid!(PrefixZipper),
             path: self.path.clone(),
             position,
             source: self.source.fork_read_zipper()?,
@@ -709,6 +750,7 @@ impl<'prefix, V: Clone + Send + Sync + Unpin, Z, A: Allocator> ZipperSubtries<V,
 {
     fn native_subtries(&self) -> bool { self.source.native_subtries() }
     fn try_make_map(&self) -> Option<PathMap<V, A>> {
+        crate::trace::trace_point!(try_make_map, self.uid);
         if !self.native_subtries() {
             return None
         }
@@ -734,6 +776,7 @@ impl<'prefix, V: Clone + Send + Sync + Unpin, Z, A: Allocator> ZipperSubtries<V,
         }
     }
     fn trie_ref(&self) -> Option<TrieRef<'_, V, A>> {
+        crate::trace::trace_point!(trie_ref, self.uid);
         if !self.native_subtries() {
             return None
         }
@@ -755,6 +798,7 @@ impl<'prefix, V: Clone + Send + Sync + Unpin, Z, A: Allocator> ZipperInfallibleS
         Z: ZipperInfallibleSubtries<V, A> + ZipperSubtries<V, A>
 {
     fn make_map(&self) -> PathMap<V, A> {
+        crate::trace::trace_point!(make_map, self.uid);
         let leaf_map = self.source.make_map();
         match self.prefix_path_below_focus() {
             Some(prefix_path) => {
@@ -773,6 +817,7 @@ impl<'prefix, V: Clone + Send + Sync + Unpin, Z, A: Allocator> ZipperInfallibleS
         }
     }
     fn get_trie_ref(&self) -> TrieRef<'_, V, A> {
+        crate::trace::trace_point!(get_trie_ref, self.uid);
         if let Some(prefix_path) = self.prefix_path_below_focus() {
             if prefix_path.len() > 0 {
                 let temp_map = self.make_map();
@@ -784,14 +829,14 @@ impl<'prefix, V: Clone + Send + Sync + Unpin, Z, A: Allocator> ZipperInfallibleS
             TrieRefOwned::new_invalid_in(self.source.alloc()).into()
         }
     }
-    fn get_focus(&self) -> OpaqueAbstractNodeRef<'_, V, A> { self.source.get_focus() }
-    fn get_focus_at<K: AsRef<[u8]>>(&self, path: K) -> OpaqueAbstractNodeRef<'_, V, A> { self.source.get_focus_at(path) }
-    fn try_borrow_focus(&self) -> Option<OpaqueTrieNodeRef<'_, V, A>> { self.source.try_borrow_focus() }
+    fn get_focus(&self) -> OpaqueAbstractNodeRef<'_, V, A> { crate::trace::trace_point!(get_focus, self.uid); self.source.get_focus() }
+    fn get_focus_at<K: AsRef<[u8]>>(&self, path: K) -> OpaqueAbstractNodeRef<'_, V, A> { crate::trace::trace_point!(get_focus_at, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len()); self.source.get_focus_at(path) }
+    fn try_borrow_focus(&self) -> Option<OpaqueTrieNodeRef<'_, V, A>> { crate::trace::trace_point!(try_borrow_focus, self.uid); self.source.try_borrow_focus() }
 }
 
 impl<'prefix, 'a, V: Clone + Send + Sync + 'a, Z, A: Allocator + 'a> ZipperReadOnlySubtries<'a, V, A> for PrefixZipper<'prefix, Z> where Z: ZipperReadOnlySubtries<'a, V, A>, Self: zipper_priv::ZipperReadOnlyPriv<'a, V, A> + ZipperSubtries<V, A> {
     type TrieRefT = <Z as ZipperReadOnlySubtries<'a, V, A>>::TrieRefT;
-    fn trie_ref_at_path<K: AsRef<[u8]>>(&self, path: K) -> Self::TrieRefT { self.source.trie_ref_at_path(path) }
+    fn trie_ref_at_path<K: AsRef<[u8]>>(&self, path: K) -> Self::TrieRefT { crate::trace::trace_point!(trie_ref_at_path, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len()); self.source.trie_ref_at_path(path) }
 }
 
 crate::zipper::impl_zipper_debug!(

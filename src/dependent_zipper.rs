@@ -21,6 +21,8 @@ pub struct DependentProductZipperG<'trie, PrimaryZ, SecondaryZ, V, C, F>
     where
         V: Clone + Send + Sync,
 {
+    /// Identifies the zipper in traces, see [crate::trace]
+    uid: crate::trace::ZipperUid,
     factor_paths: Vec<usize>,
     primary: PrimaryZ,
     secondary: Vec<SecondaryZ>,
@@ -41,6 +43,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V, C, F : Clone + for <'a> FnOnce(C, &'a [u8],
             PrimaryZ: ZipperValues<V>
     {
         Self {
+            uid: crate::trace::new_uid!(DependentProductZipperG),
             factor_paths: Vec::new(),
             primary: primary,
             secondary: vec![],
@@ -186,8 +189,8 @@ impl<'trie, PrimaryZ, SecondaryZ, V, C, F : Clone + for <'a> FnOnce(C, &'a [u8],
         PrimaryZ: ZipperAbsolutePath,
         SecondaryZ: ZipperMoving,
 {
-    fn origin_path(&self) -> &[u8] { self.primary.origin_path() }
-    fn root_prefix_path(&self) -> &[u8] { self.primary.root_prefix_path() }
+    fn origin_path(&self) -> &[u8] { crate::trace::trace_point!(origin_path, self.uid); self.primary.origin_path() }
+    fn root_prefix_path(&self) -> &[u8] { crate::trace::trace_point!(root_prefix_path, self.uid); self.primary.root_prefix_path() }
 }
 
 impl<'trie, PrimaryZ, SecondaryZ, V, C, F : Clone + for <'a> FnOnce(C, &'a [u8], usize) -> (C, Option<SecondaryZ>)> ZipperConcrete
@@ -198,6 +201,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V, C, F : Clone + for <'a> FnOnce(C, &'a [u8],
         SecondaryZ: ZipperMoving + ZipperConcrete,
 {
     fn shared_node_id(&self) -> Option<u64> {
+        crate::trace::trace_point!(shared_node_id, self.uid);
         if let Some(idx) = self.factor_idx(true) {
             self.secondary[idx].shared_node_id()
         } else {
@@ -205,6 +209,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V, C, F : Clone + for <'a> FnOnce(C, &'a [u8],
         }
     }
     fn is_shared(&self) -> bool {
+        crate::trace::trace_point!(is_shared, self.uid);
         if let Some(idx) = self.factor_idx(true) {
             self.secondary[idx].is_shared()
         } else {
@@ -233,6 +238,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V, C, F : Clone + for <'a> FnOnce(C, &'a [u8],
         SecondaryZ: ZipperMoving + ZipperValues<V>,
 {
     fn val(&self) -> Option<&V> {
+        crate::trace::trace_point!(val, self.uid);
         if let Some(idx) = self.factor_idx(true) {
             self.secondary[idx].val()
         } else {
@@ -249,6 +255,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V, C, F : Clone + for <'a> FnOnce(C, &'a [u8],
         SecondaryZ: ZipperMoving + ZipperPath + ZipperValuesAt<V>,
 {
     fn val_at<K: AsRef<[u8]>>(&self, path: K) -> Option<&V> {
+        crate::trace::trace_point!(val_at, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         if let Some(idx) = self.factor_idx(true) {
             self.secondary[idx].val_at(path)
         } else {
@@ -265,6 +272,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V, C, F : Clone + for <'a> FnOnce(C, &'a [u8],
         SecondaryZ: ZipperMoving + ZipperReadOnlyValues<'trie, V>,
 {
     fn get_val(&self) -> Option<&'trie V> {
+        crate::trace::trace_point!(get_val, self.uid);
         if let Some(idx) = self.factor_idx(true) {
             self.secondary[idx].get_val()
         } else {
@@ -272,6 +280,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V, C, F : Clone + for <'a> FnOnce(C, &'a [u8],
         }
     }
     fn get_val_at<K: AsRef<[u8]>>(&self, path: K) -> Option<&'trie V> {
+        crate::trace::trace_point!(get_val_at, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         if let Some(idx) = self.factor_idx(true) {
             self.secondary[idx].get_val_at(path)
         } else {
@@ -294,6 +303,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V, C, F : Clone + for <'a> FnOnce(C, &'a [u8],
         (primary_witness, secondary_witnesses)
     }
     fn get_val_with_witness<'w>(&self, witness: &'w Self::WitnessT) -> Option<&'w V> where 'trie: 'w {
+        crate::trace::trace_point!(get_val_with_witness, self.uid);
         if let Some(idx) = self.factor_idx(true) {
             self.secondary[idx].get_val_with_witness(&witness.1[idx])
         } else {
@@ -308,7 +318,9 @@ impl<'trie, PrimaryZ, SecondaryZ, V, C, F : Clone + for <'a> FnOnce(C, &'a [u8],
         PrimaryZ: ZipperMoving + ZipperPath + Zipper,
         SecondaryZ: ZipperMoving + Zipper,
 {
+    fn trace_uid(&self) -> u64 { self.uid.get() }
     fn path_exists(&self) -> bool {
+        crate::trace::trace_point!(path_exists, self.uid);
         if let Some(idx) = self.factor_idx(true) {
             self.secondary[idx].path_exists()
         } else {
@@ -316,6 +328,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V, C, F : Clone + for <'a> FnOnce(C, &'a [u8],
         }
     }
     fn is_val(&self) -> bool {
+        crate::trace::trace_point!(is_val, self.uid);
         if let Some(idx) = self.factor_idx(true) {
             self.secondary[idx].is_val()
         } else {
@@ -323,6 +336,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V, C, F : Clone + for <'a> FnOnce(C, &'a [u8],
         }
     }
     fn child_count(&self) -> usize {
+        crate::trace::trace_point!(child_count, self.uid);
         if let Some(idx) = self.factor_idx(false) {
             self.secondary[idx].child_count()
         } else {
@@ -330,6 +344,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V, C, F : Clone + for <'a> FnOnce(C, &'a [u8],
         }
     }
     fn child_mask(&self) -> ByteMask {
+        crate::trace::trace_point!(child_mask, self.uid);
         if let Some(idx) = self.factor_idx(false) {
             self.secondary[idx].child_mask()
         } else {
@@ -346,21 +361,26 @@ impl<'trie, PrimaryZ, SecondaryZ, V, C, F : Clone + for <'a> FnOnce(C, &'a [u8],
 {
     #[inline]
     fn depth(&self) -> usize {
+        crate::trace::trace_point!(depth, self.uid);
         self.primary.depth()
     }
     #[inline]
     fn focus_byte(&self) -> Option<u8> {
+        crate::trace::trace_point!(focus_byte, self.uid);
         self.primary.focus_byte()
     }
     fn reset(&mut self) {
+        crate::trace::trace_point!(reset, self.uid);
         self.factor_paths.clear();
         self.secondary.clear();
         self.primary.reset();
     }
     fn val_count(&self) -> usize {
+        crate::trace::trace_point!(val_count, self.uid);
         unimplemented!("method will probably get removed")
     }
     fn descend_to_existing<K: AsRef<[u8]>>(&mut self, path: K) -> usize {
+        crate::trace::trace_point!(descend_to_existing, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         let mut path = path.as_ref();
         let mut descended = 0;
         'descend: while !path.is_empty() {
@@ -382,6 +402,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V, C, F : Clone + for <'a> FnOnce(C, &'a [u8],
         descended
     }
     fn descend_to<K: AsRef<[u8]>>(&mut self, path: K) {
+        crate::trace::trace_point!(descend_to, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         let path = path.as_ref();
         let good = self.descend_to_existing(path);
         if good == path.len() {
@@ -396,9 +417,11 @@ impl<'trie, PrimaryZ, SecondaryZ, V, C, F : Clone + for <'a> FnOnce(C, &'a [u8],
     }
     #[inline]
     fn descend_to_byte(&mut self, k: u8) {
+        crate::trace::trace_point!(descend_to_byte, self.uid, k);
         self.descend_to([k])
     }
     fn descend_indexed_byte(&mut self, child_idx: usize) -> Option<u8> {
+        crate::trace::trace_point!(descend_indexed_byte, self.uid, child_idx);
         let mask = self.child_mask();
         let byte = mask.indexed_bit::<true>(child_idx)?;
         self.descend_to_byte(byte);
@@ -406,9 +429,11 @@ impl<'trie, PrimaryZ, SecondaryZ, V, C, F : Clone + for <'a> FnOnce(C, &'a [u8],
     }
     #[inline]
     fn descend_first_byte(&mut self) -> Option<u8> {
+        crate::trace::trace_point!(descend_first_byte, self.uid);
         self.descend_indexed_byte(0)
     }
     fn descend_until_observed<Obs: PathObserver>(&mut self, obs: &mut Obs) -> bool {
+        crate::trace::trace_point!(descend_until_observed, self.uid);
         let mut moved = false;
         self.enter_factors();
         while self.child_count() == 1 {
@@ -430,13 +455,16 @@ impl<'trie, PrimaryZ, SecondaryZ, V, C, F : Clone + for <'a> FnOnce(C, &'a [u8],
     }
     #[inline]
     fn to_next_sibling_byte(&mut self) -> Option<u8> {
+        crate::trace::trace_point!(to_next_sibling_byte, self.uid);
         self.to_sibling_byte(true)
     }
     #[inline]
     fn to_prev_sibling_byte(&mut self) -> Option<u8> {
+        crate::trace::trace_point!(to_prev_sibling_byte, self.uid);
         self.to_sibling_byte(false)
     }
     fn ascend(&mut self, steps: usize) -> usize {
+        crate::trace::trace_point!(ascend, self.uid, steps);
         let mut remaining = steps;
         while remaining > 0 {
             self.exit_factors();
@@ -454,14 +482,17 @@ impl<'trie, PrimaryZ, SecondaryZ, V, C, F : Clone + for <'a> FnOnce(C, &'a [u8],
     }
     #[inline]
     fn ascend_byte(&mut self) -> bool {
+        crate::trace::trace_point!(ascend_byte, self.uid);
         self.ascend(1) == 1
     }
     #[inline]
     fn ascend_until(&mut self) -> usize {
+        crate::trace::trace_point!(ascend_until, self.uid);
         self.ascend_cond(true)
     }
     #[inline]
     fn ascend_until_branch(&mut self) -> usize {
+        crate::trace::trace_point!(ascend_until_branch, self.uid);
         self.ascend_cond(false)
     }
 }
@@ -474,6 +505,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V, C, F : Clone + for <'a> FnOnce(C, &'a [u8],
 {
     #[inline]
     fn path(&self) -> &[u8] {
+        crate::trace::trace_point!(path, self.uid);
         self.primary.path()
     }
 }
@@ -494,8 +526,8 @@ impl<'trie, PrimaryZ, SecondaryZ, V: Clone + Send + Sync + Unpin, C, F : Clone +
         SecondaryZ: ZipperMoving + ZipperValues<V>,
 {
     fn native_subtries(&self) -> bool { false }
-    fn try_make_map(&self) -> Option<PathMap<V, GlobalAlloc>> { None }
-    fn trie_ref(&self) -> Option<TrieRef<'_, V, GlobalAlloc>> { None }
+    fn try_make_map(&self) -> Option<PathMap<V, GlobalAlloc>> { crate::trace::trace_point!(try_make_map, self.uid); None }
+    fn trie_ref(&self) -> Option<TrieRef<'_, V, GlobalAlloc>> { crate::trace::trace_point!(trie_ref, self.uid); None }
     fn alloc(&self) -> GlobalAlloc { global_alloc() }
 }
 

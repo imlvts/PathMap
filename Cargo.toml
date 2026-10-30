@@ -35,6 +35,7 @@ rand = { version = "0.9.0", optional = true }
 memmap2 = { version = "0.9.5", optional = true }
 fast-slice-utils = { version = "0.1.2", features=[] }
 distr-combinators = { version = "0.1.0", optional = true }
+libc = { version = "0.2", optional = true } # for the `trace_asm` feature
 
 [features]
 default = ["graft_root_vals", "slim_ptrs", "serialization"]
@@ -56,6 +57,9 @@ act_counters = ["arena_compact"] # LP: Question: Why isn't this code enabled by 
 viz = []
 serialization = ["dep:libz-ng-sys"]
 zipper_alg = [] # Enables experimental implementations of Zipper-based algebraic operations
+trace_uid = [] # Gives every zipper a process-unique id (see the `trace` module).  Trace points stay compiled out
+trace_usdt = ["trace_uid"] # Compiles zipper trace points to USDT (SystemTap SDT) probes, provider `pathmap`
+trace_asm = ["trace_uid", "dep:libc"] # Compiles zipper trace points to patchable nop sites with an in-process handler. x86_64 Linux only.  Exclusive with `trace_usdt`
 
 [target.'cfg(miri)'.dependencies]
 fast-slice-utils = { version = "0.1.2", features = ["miri_safe"] }
@@ -150,6 +154,10 @@ required-features = ["arena_compact", "serialization"]
 [[example]]
 name = "act_line_cache"
 required-features = ["arena_compact", "serialization"]
+
+[[example]]
+name = "usdt_demo"
+required-features = ["trace_usdt"]
 
 [workspace]
 members = ["pathmap-derive", "examples/sampling", "examples/arena_compact_tests", "differential"]

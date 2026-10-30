@@ -62,4 +62,10 @@ pathmap = "0.3"
 
 - `zipper_alg`: Exposes experimental zipper-based algebraic operations enabling more control and performance.  For example: symmetric difference, and multi-zipper variants on join, meet, and subtract operations.
 
+- `trace_usdt`: Compiles a trace point into every zipper method as a USDT (SystemTap SDT) probe with provider `pathmap`, so bpftrace, perf, bcc or SystemTap can attach to a release build.  Every zipper gets a process-unique id that is passed with each event.  See the `trace` module.
+
+- `trace_asm`: Same trace points, compiled to patchable `nop` sites (x86_64 Linux only).  Disabled sites cost one `nop`; `trace::asm::enable` patches selected sites to call an in-process handler.  Exclusive with `trace_usdt`.
+
+- `trace_uid`: Only the per-zipper ids, with trace points compiled out.  Implied by `trace_usdt` and `trace_asm`.
+
 Other cargo features in this crate are intended for use by the developers of `pathmap` itself.

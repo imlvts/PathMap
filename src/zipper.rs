@@ -53,6 +53,13 @@ pub trait Zipper {
     ///
     /// Returns an empty mask if the focus is on a leaf or non-existent path
     fn child_mask(&self) -> ByteMask;
+
+    /// Returns the zipper's [ZipperUid](crate::trace::ZipperUid), or 0 for a zipper without one
+    ///
+    /// Always 0 without the `trace_uid` feature
+    #[doc(hidden)]
+    #[inline(always)]
+    fn trace_uid(&self) -> u64 { 0 }
 }
 
 /// Methods for zippers with a known value type
@@ -1428,96 +1435,104 @@ pub(crate) mod zipper_priv {
 use zipper_priv::*;
 
 macro_rules! zipper_impl_lens {
-    (ZipperIteration $s: ident => $e:expr) => {
-        fn to_next_val_observed<Obs: PathObserver>(&mut $s, obs: &mut Obs) -> bool { $e.to_next_val_observed(obs) }
-        fn to_prev_val_observed<Obs: PathObserver>(&mut $s, obs: &mut Obs) -> bool { $e.to_prev_val_observed(obs) }
-        fn descend_last_path_observed<Obs: PathObserver>(&mut $s, obs: &mut Obs) -> bool { $e.descend_last_path_observed(obs) }
-        fn descend_last_val_observed<Obs: PathObserver>(&mut $s, obs: &mut Obs) -> bool { $e.descend_last_val_observed(obs) }
-        fn descend_first_k_path_observed<Obs: PathObserver>(&mut $s, k: usize, obs: &mut Obs) -> bool { $e.descend_first_k_path_observed(k, obs) }
-        fn to_next_k_path_observed<Obs: PathObserver>(&mut $s, k: usize, obs: &mut Obs) -> bool { $e.to_next_k_path_observed(k, obs) }
+    (ZipperIteration $s: ident => $e:expr $(, uid = $uid:expr)?) => {
+        fn to_next_val_observed<Obs: PathObserver>(&mut $s, obs: &mut Obs) -> bool { $(crate::trace::trace_point!(to_next_val_observed, $uid);)? $e.to_next_val_observed(obs) }
+        fn to_prev_val_observed<Obs: PathObserver>(&mut $s, obs: &mut Obs) -> bool { $(crate::trace::trace_point!(to_prev_val_observed, $uid);)? $e.to_prev_val_observed(obs) }
+        fn descend_last_path_observed<Obs: PathObserver>(&mut $s, obs: &mut Obs) -> bool { $(crate::trace::trace_point!(descend_last_path_observed, $uid);)? $e.descend_last_path_observed(obs) }
+        fn descend_last_val_observed<Obs: PathObserver>(&mut $s, obs: &mut Obs) -> bool { $(crate::trace::trace_point!(descend_last_val_observed, $uid);)? $e.descend_last_val_observed(obs) }
+        fn descend_first_k_path_observed<Obs: PathObserver>(&mut $s, k: usize, obs: &mut Obs) -> bool { $(crate::trace::trace_point!(descend_first_k_path_observed, $uid, k);)? $e.descend_first_k_path_observed(k, obs) }
+        fn to_next_k_path_observed<Obs: PathObserver>(&mut $s, k: usize, obs: &mut Obs) -> bool { $(crate::trace::trace_point!(to_next_k_path_observed, $uid, k);)? $e.to_next_k_path_observed(k, obs) }
     };
-    (ZipperAbsolutePath $s: ident => $e:expr) => {
-        fn origin_path(&$s) -> &[u8] { $e.origin_path() }
-        fn root_prefix_path(&$s) -> &[u8] { $e.root_prefix_path() }
+    (ZipperAbsolutePath $s: ident => $e:expr $(, uid = $uid:expr)?) => {
+        fn origin_path(&$s) -> &[u8] { $(crate::trace::trace_point!(origin_path, $uid);)? $e.origin_path() }
+        fn root_prefix_path(&$s) -> &[u8] { $(crate::trace::trace_point!(root_prefix_path, $uid);)? $e.root_prefix_path() }
     };
-    (ZipperPath $s: ident => $e:expr) => {
-        #[inline] fn path(&$s) -> &[u8] { $e.path() }
-        fn move_to_path<K: AsRef<[u8]>>(&mut $s, path: K) -> usize { $e.move_to_path(path) }
+    (ZipperPath $s: ident => $e:expr $(, uid = $uid:expr)?) => {
+        #[inline] fn path(&$s) -> &[u8] { $(crate::trace::trace_point!(path, $uid);)? $e.path() }
+        fn move_to_path<K: AsRef<[u8]>>(&mut $s, path: K) -> usize { $(crate::trace::trace_point!(move_to_path, $uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());)? $e.move_to_path(path) }
+    };
+    (Zipper $s: ident => $e:expr, uid = $uid:expr) => {
+        fn trace_uid(&$s) -> u64 { crate::trace::TraceArg::trace_arg(&$uid) }
+        zipper_impl_lens!(@Zipper $s => $e, $uid);
     };
     (Zipper $s: ident => $e:expr) => {
-        #[inline] fn path_exists(&$s) -> bool { $e.path_exists() }
-        fn is_val(&$s) -> bool { $e.is_val() }
-        fn child_count(&$s) -> usize { $e.child_count() }
-        fn child_mask(&$s) -> ByteMask { $e.child_mask() }
+        fn trace_uid(&$s) -> u64 { $e.trace_uid() }
+        zipper_impl_lens!(@Zipper $s => $e);
     };
-    (ZipperValues $s: ident => $e:expr) => {
-        fn val(&$s) -> Option<&V> { $e.val() }
+    (@Zipper $s: ident => $e:expr $(, $uid:expr)?) => {
+        #[inline] fn path_exists(&$s) -> bool { $(crate::trace::trace_point!(path_exists, $uid);)? $e.path_exists() }
+        fn is_val(&$s) -> bool { $(crate::trace::trace_point!(is_val, $uid);)? $e.is_val() }
+        fn child_count(&$s) -> usize { $(crate::trace::trace_point!(child_count, $uid);)? $e.child_count() }
+        fn child_mask(&$s) -> ByteMask { $(crate::trace::trace_point!(child_mask, $uid);)? $e.child_mask() }
     };
-    (ZipperValuesAt $s: ident => $e:expr) => {
-        fn val_at<K: AsRef<[u8]>>(&$s, path: K) -> Option<&V> { $e.val_at(path) }
+    (ZipperValues $s: ident => $e:expr $(, uid = $uid:expr)?) => {
+        fn val(&$s) -> Option<&V> { $(crate::trace::trace_point!(val, $uid);)? $e.val() }
     };
-    (ZipperForking $s: ident => $e:expr) => {
-        fn fork_read_zipper<'a>(&'a $s) -> Option<Self::ReadZipperT<'a>> { $e.fork_read_zipper() }
+    (ZipperValuesAt $s: ident => $e:expr $(, uid = $uid:expr)?) => {
+        fn val_at<K: AsRef<[u8]>>(&$s, path: K) -> Option<&V> { $(crate::trace::trace_point!(val_at, $uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());)? $e.val_at(path) }
     };
-    (ZipperSubtries $s: ident => $e:expr) => {
+    (ZipperForking $s: ident => $e:expr $(, uid = $uid:expr)?) => {
+        fn fork_read_zipper<'a>(&'a $s) -> Option<Self::ReadZipperT<'a>> { $(crate::trace::trace_point!(fork_read_zipper, $uid);)? $e.fork_read_zipper() }
+    };
+    (ZipperSubtries $s: ident => $e:expr $(, uid = $uid:expr)?) => {
         fn native_subtries(&$s) -> bool { $e.native_subtries() }
-        fn try_make_map(&$s) -> Option<crate::PathMap<V, A>> { $e.try_make_map() }
-        fn trie_ref(&$s) -> Option<TrieRef<'_, V, A>> { $e.trie_ref() }
+        fn try_make_map(&$s) -> Option<crate::PathMap<V, A>> { $(crate::trace::trace_point!(try_make_map, $uid);)? $e.try_make_map() }
+        fn trie_ref(&$s) -> Option<TrieRef<'_, V, A>> { $(crate::trace::trace_point!(trie_ref, $uid);)? $e.trie_ref() }
         fn alloc(&$s) -> A { $e.alloc() }
     };
-    (ZipperMoving $s: ident => $e:expr) => {
-        #[inline] fn depth(&$s) -> usize { $e.depth() }
-        fn at_root(&$s) -> bool { $e.at_root() }
-        #[inline] fn focus_byte(&$s) -> Option<u8> { $e.focus_byte() }
-        fn reset(&mut $s) { $e.reset() }
-        fn val_count(&$s) -> usize { $e.val_count() }
-        fn descend_to<K: AsRef<[u8]>>(&mut $s, k: K) { $e.descend_to(k) }
-        fn descend_to_check<K: AsRef<[u8]>>(&mut $s, k: K) -> bool { $e.descend_to_check(k) }
-        fn descend_to_existing<K: AsRef<[u8]>>(&mut $s, k: K) -> usize { $e.descend_to_existing(k) }
-        fn descend_to_val<K: AsRef<[u8]>>(&mut $s, k: K) -> usize { $e.descend_to_val(k) }
-        fn descend_to_byte(&mut $s, k: u8) { $e.descend_to_byte(k) }
-        fn descend_to_existing_byte(&mut $s, k: u8) -> bool { $e.descend_to_existing_byte(k) }
-        fn descend_indexed_byte(&mut $s, child_idx: usize) -> Option<u8> { $e.descend_indexed_byte(child_idx) }
-        fn descend_first_byte(&mut $s) -> Option<u8> { $e.descend_first_byte() }
-        fn descend_until_observed<Obs: PathObserver>(&mut $s, obs: &mut Obs) -> bool { $e.descend_until_observed(obs) }
-        fn descend_until_max_bytes_observed<Obs: PathObserver>(&mut $s, max_bytes: usize, obs: &mut Obs) -> bool { $e.descend_until_max_bytes_observed(max_bytes, obs) }
-        fn to_next_sibling_byte(&mut $s) -> Option<u8> { $e.to_next_sibling_byte() }
-        fn to_prev_sibling_byte(&mut $s) -> Option<u8> { $e.to_prev_sibling_byte() }
-        fn ascend(&mut $s, steps: usize) -> usize { $e.ascend(steps) }
-        fn ascend_byte(&mut $s) -> bool { $e.ascend_byte() }
-        fn ascend_until(&mut $s) -> usize { $e.ascend_until() }
-        fn ascend_until_branch(&mut $s) -> usize { $e.ascend_until_branch() }
-        fn to_next_step_observed<Obs: PathObserver>(&mut $s, obs: &mut Obs) -> bool { $e.to_next_step_observed(obs) }
-        fn to_prev_step_observed<Obs: PathObserver>(&mut $s, obs: &mut Obs) -> bool { $e.to_prev_step_observed(obs) }
+    (ZipperMoving $s: ident => $e:expr $(, uid = $uid:expr)?) => {
+        #[inline] fn depth(&$s) -> usize { $(crate::trace::trace_point!(depth, $uid);)? $e.depth() }
+        fn at_root(&$s) -> bool { $(crate::trace::trace_point!(at_root, $uid);)? $e.at_root() }
+        #[inline] fn focus_byte(&$s) -> Option<u8> { $(crate::trace::trace_point!(focus_byte, $uid);)? $e.focus_byte() }
+        fn reset(&mut $s) { $(crate::trace::trace_point!(reset, $uid);)? $e.reset() }
+        fn val_count(&$s) -> usize { $(crate::trace::trace_point!(val_count, $uid);)? $e.val_count() }
+        fn descend_to<K: AsRef<[u8]>>(&mut $s, k: K) { $(crate::trace::trace_point!(descend_to, $uid, AsRef::<[u8]>::as_ref(&k).as_ptr(), AsRef::<[u8]>::as_ref(&k).len());)? $e.descend_to(k) }
+        fn descend_to_check<K: AsRef<[u8]>>(&mut $s, k: K) -> bool { $(crate::trace::trace_point!(descend_to_check, $uid, AsRef::<[u8]>::as_ref(&k).as_ptr(), AsRef::<[u8]>::as_ref(&k).len());)? $e.descend_to_check(k) }
+        fn descend_to_existing<K: AsRef<[u8]>>(&mut $s, k: K) -> usize { $(crate::trace::trace_point!(descend_to_existing, $uid, AsRef::<[u8]>::as_ref(&k).as_ptr(), AsRef::<[u8]>::as_ref(&k).len());)? $e.descend_to_existing(k) }
+        fn descend_to_val<K: AsRef<[u8]>>(&mut $s, k: K) -> usize { $(crate::trace::trace_point!(descend_to_val, $uid, AsRef::<[u8]>::as_ref(&k).as_ptr(), AsRef::<[u8]>::as_ref(&k).len());)? $e.descend_to_val(k) }
+        fn descend_to_byte(&mut $s, k: u8) { $(crate::trace::trace_point!(descend_to_byte, $uid, k);)? $e.descend_to_byte(k) }
+        fn descend_to_existing_byte(&mut $s, k: u8) -> bool { $(crate::trace::trace_point!(descend_to_existing_byte, $uid, k);)? $e.descend_to_existing_byte(k) }
+        fn descend_indexed_byte(&mut $s, child_idx: usize) -> Option<u8> { $(crate::trace::trace_point!(descend_indexed_byte, $uid, child_idx);)? $e.descend_indexed_byte(child_idx) }
+        fn descend_first_byte(&mut $s) -> Option<u8> { $(crate::trace::trace_point!(descend_first_byte, $uid);)? $e.descend_first_byte() }
+        fn descend_until_observed<Obs: PathObserver>(&mut $s, obs: &mut Obs) -> bool { $(crate::trace::trace_point!(descend_until_observed, $uid);)? $e.descend_until_observed(obs) }
+        fn descend_until_max_bytes_observed<Obs: PathObserver>(&mut $s, max_bytes: usize, obs: &mut Obs) -> bool { $(crate::trace::trace_point!(descend_until_max_bytes_observed, $uid, max_bytes);)? $e.descend_until_max_bytes_observed(max_bytes, obs) }
+        fn to_next_sibling_byte(&mut $s) -> Option<u8> { $(crate::trace::trace_point!(to_next_sibling_byte, $uid);)? $e.to_next_sibling_byte() }
+        fn to_prev_sibling_byte(&mut $s) -> Option<u8> { $(crate::trace::trace_point!(to_prev_sibling_byte, $uid);)? $e.to_prev_sibling_byte() }
+        fn ascend(&mut $s, steps: usize) -> usize { $(crate::trace::trace_point!(ascend, $uid, steps);)? $e.ascend(steps) }
+        fn ascend_byte(&mut $s) -> bool { $(crate::trace::trace_point!(ascend_byte, $uid);)? $e.ascend_byte() }
+        fn ascend_until(&mut $s) -> usize { $(crate::trace::trace_point!(ascend_until, $uid);)? $e.ascend_until() }
+        fn ascend_until_branch(&mut $s) -> usize { $(crate::trace::trace_point!(ascend_until_branch, $uid);)? $e.ascend_until_branch() }
+        fn to_next_step_observed<Obs: PathObserver>(&mut $s, obs: &mut Obs) -> bool { $(crate::trace::trace_point!(to_next_step_observed, $uid);)? $e.to_next_step_observed(obs) }
+        fn to_prev_step_observed<Obs: PathObserver>(&mut $s, obs: &mut Obs) -> bool { $(crate::trace::trace_point!(to_prev_step_observed, $uid);)? $e.to_prev_step_observed(obs) }
     };
-    (ZipperInfallibleSubtries $s: ident => $e:expr) => {
-        fn make_map(&$s) -> crate::PathMap<V, A> { $e.make_map() }
-        fn get_trie_ref(&$s) -> TrieRef<'_, V, A> { $e.get_trie_ref() }
-        fn get_focus(&$s) -> OpaqueAbstractNodeRef<'_, V, A> { $e.get_focus() }
-        fn get_focus_at<K: AsRef<[u8]>>(&$s, k: K) -> OpaqueAbstractNodeRef<'_, V, A> { $e.get_focus_at(k) }
-        fn try_borrow_focus(&$s) -> Option<OpaqueTrieNodeRef<'_, V, A>> { $e.try_borrow_focus() }
+    (ZipperInfallibleSubtries $s: ident => $e:expr $(, uid = $uid:expr)?) => {
+        fn make_map(&$s) -> crate::PathMap<V, A> { $(crate::trace::trace_point!(make_map, $uid);)? $e.make_map() }
+        fn get_trie_ref(&$s) -> TrieRef<'_, V, A> { $(crate::trace::trace_point!(get_trie_ref, $uid);)? $e.get_trie_ref() }
+        fn get_focus(&$s) -> OpaqueAbstractNodeRef<'_, V, A> { $(crate::trace::trace_point!(get_focus, $uid);)? $e.get_focus() }
+        fn get_focus_at<K: AsRef<[u8]>>(&$s, k: K) -> OpaqueAbstractNodeRef<'_, V, A> { $(crate::trace::trace_point!(get_focus_at, $uid, AsRef::<[u8]>::as_ref(&k).as_ptr(), AsRef::<[u8]>::as_ref(&k).len());)? $e.get_focus_at(k) }
+        fn try_borrow_focus(&$s) -> Option<OpaqueTrieNodeRef<'_, V, A>> { $(crate::trace::trace_point!(try_borrow_focus, $uid);)? $e.try_borrow_focus() }
     };
-    (ZipperReadOnlyValues $s: ident => $e:expr) => {
-        fn get_val(&$s) -> Option<&'a V> { $e.get_val() }
-        fn get_val_at<K: AsRef<[u8]>>(&$s, path: K) -> Option<&'a V> { $e.get_val_at(path) }
+    (ZipperReadOnlyValues $s: ident => $e:expr $(, uid = $uid:expr)?) => {
+        fn get_val(&$s) -> Option<&'a V> { $(crate::trace::trace_point!(get_val, $uid);)? $e.get_val() }
+        fn get_val_at<K: AsRef<[u8]>>(&$s, path: K) -> Option<&'a V> { $(crate::trace::trace_point!(get_val_at, $uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());)? $e.get_val_at(path) }
     };
-    (ZipperReadOnlyConditionalValues $s: ident => $e:expr) => {
+    (ZipperReadOnlyConditionalValues $s: ident => $e:expr $(, uid = $uid:expr)?) => {
         fn witness<'w>(&$s) -> Self::WitnessT { $e.witness() }
-        fn get_val_with_witness<'w>(&$s, witness: &'w Self::WitnessT) -> Option<&'w V> where 'a: 'w { $e.get_val_with_witness(witness) }
+        fn get_val_with_witness<'w>(&$s, witness: &'w Self::WitnessT) -> Option<&'w V> where 'a: 'w { $(crate::trace::trace_point!(get_val_with_witness, $uid);)? $e.get_val_with_witness(witness) }
     };
-    (ZipperReadOnlyIteration $s: ident => $e:expr) => {
-        fn to_next_get_val_observed<Obs: PathObserver>(&mut $s, obs: &mut Obs) -> Option<&'a V> { $e.to_next_get_val_observed(obs) }
+    (ZipperReadOnlyIteration $s: ident => $e:expr $(, uid = $uid:expr)?) => {
+        fn to_next_get_val_observed<Obs: PathObserver>(&mut $s, obs: &mut Obs) -> Option<&'a V> { $(crate::trace::trace_point!(to_next_get_val_observed, $uid);)? $e.to_next_get_val_observed(obs) }
     };
-    (ZipperReadOnlyConditionalIteration $s: ident => $e:expr) => {
-        fn to_next_get_val_with_witness_observed<'w, Obs: PathObserver>(&mut $s, witness: &'w Self::WitnessT, obs: &mut Obs) -> Option<&'w V> where 'a: 'w { $e.to_next_get_val_with_witness_observed(witness, obs) }
+    (ZipperReadOnlyConditionalIteration $s: ident => $e:expr $(, uid = $uid:expr)?) => {
+        fn to_next_get_val_with_witness_observed<'w, Obs: PathObserver>(&mut $s, witness: &'w Self::WitnessT, obs: &mut Obs) -> Option<&'w V> where 'a: 'w { $(crate::trace::trace_point!(to_next_get_val_with_witness_observed, $uid);)? $e.to_next_get_val_with_witness_observed(witness, obs) }
     };
-    (ZipperReadOnlySubtries $s: ident => $e:expr) => {
+    (ZipperReadOnlySubtries $s: ident => $e:expr $(, uid = $uid:expr)?) => {
         type TrieRefT = <Z as ZipperReadOnlySubtries<'a, V, A>>::TrieRefT;
-        fn trie_ref_at_path<K: AsRef<[u8]>>(&$s, path: K) -> Self::TrieRefT { $e.trie_ref_at_path(path) }
+        fn trie_ref_at_path<K: AsRef<[u8]>>(&$s, path: K) -> Self::TrieRefT { $(crate::trace::trace_point!(trie_ref_at_path, $uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());)? $e.trie_ref_at_path(path) }
     };
-    (ZipperConcrete $s: ident => $e:expr) => {
-        #[inline] fn shared_node_id(&$s) -> Option<u64> { $e.shared_node_id() }
-        #[inline] fn is_shared(&$s) -> bool { $e.is_shared() }
+    (ZipperConcrete $s: ident => $e:expr $(, uid = $uid:expr)?) => {
+        #[inline] fn shared_node_id(&$s) -> Option<u64> { $(crate::trace::trace_point!(shared_node_id, $uid);)? $e.shared_node_id() }
+        #[inline] fn is_shared(&$s) -> bool { $(crate::trace::trace_point!(is_shared, $uid);)? $e.is_shared() }
     };
     (ZipperPathBuffer $s: ident => $e:expr) => {
         unsafe fn origin_path_assert_len(&$s, len: usize) -> &[u8] { unsafe{ $e.origin_path_assert_len(len) } }
@@ -1597,6 +1612,8 @@ pub(crate) use impl_zipper_debug;
 /// A [Zipper] returned from a [ZipperHead] that is unable to modify the trie
 #[derive(Clone)]
 pub struct ReadZipperTracked<'a, 'path, V: Clone + Send + Sync, A: Allocator = GlobalAlloc> {
+    /// Identifies the zipper in traces, see [crate::trace]
+    uid: crate::trace::ZipperUid,
     z: ReadZipperCore<'a, 'path, V, A>,
     #[allow(unused)]
     tracker: Option<ZipperTracker<TrackingRead>>,
@@ -1607,32 +1624,36 @@ impl<V: Clone + Send + Sync, A: Allocator> Drop for ReadZipperTracked<'_, '_, V,
     fn drop(&mut self) { }
 }
 
-impl<V: Clone + Send + Sync + Unpin, A: Allocator> Zipper for ReadZipperTracked<'_, '_, V, A> { zipper_impl_lens!(Zipper self => self.z); }
-impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperValues<V> for ReadZipperTracked<'_, '_, V, A>{ zipper_impl_lens!(ZipperValues self => self.z); }
-impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperValuesAt<V> for ReadZipperTracked<'_, '_, V, A>{ zipper_impl_lens!(ZipperValuesAt self => self.z); }
-impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperSubtries<V, A> for ReadZipperTracked<'_, '_, V, A> { zipper_impl_lens!(ZipperSubtries self => self.z); }
-impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperInfallibleSubtries<V, A> for ReadZipperTracked<'_, '_, V, A> { zipper_impl_lens!(ZipperInfallibleSubtries self => self.z); }
-impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperMoving for ReadZipperTracked<'trie, '_, V, A> { zipper_impl_lens!(ZipperMoving self => self.z); }
-impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperPath for ReadZipperTracked<'trie, '_, V, A> { zipper_impl_lens!(ZipperPath self => self.z); }
-impl<'a, V: Clone + Send + Sync + Unpin + 'a, A: Allocator + 'a> ZipperReadOnlyConditionalValues<'a, V> for ReadZipperTracked<'a, '_, V, A> { type WitnessT = ReadZipperWitness<V, A>; zipper_impl_lens!(ZipperReadOnlyConditionalValues self => self.z); }
-impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperConcrete for ReadZipperTracked<'_, '_, V, A> { zipper_impl_lens!(ZipperConcrete self => self.z); }
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> Zipper for ReadZipperTracked<'_, '_, V, A> { zipper_impl_lens!(Zipper self => self.z, uid = self.uid); }
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperValues<V> for ReadZipperTracked<'_, '_, V, A>{ zipper_impl_lens!(ZipperValues self => self.z, uid = self.uid); }
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperValuesAt<V> for ReadZipperTracked<'_, '_, V, A>{ zipper_impl_lens!(ZipperValuesAt self => self.z, uid = self.uid); }
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperSubtries<V, A> for ReadZipperTracked<'_, '_, V, A> { zipper_impl_lens!(ZipperSubtries self => self.z, uid = self.uid); }
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperInfallibleSubtries<V, A> for ReadZipperTracked<'_, '_, V, A> { zipper_impl_lens!(ZipperInfallibleSubtries self => self.z, uid = self.uid); }
+impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperMoving for ReadZipperTracked<'trie, '_, V, A> { zipper_impl_lens!(ZipperMoving self => self.z, uid = self.uid); }
+impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperPath for ReadZipperTracked<'trie, '_, V, A> { zipper_impl_lens!(ZipperPath self => self.z, uid = self.uid); }
+impl<'a, V: Clone + Send + Sync + Unpin + 'a, A: Allocator + 'a> ZipperReadOnlyConditionalValues<'a, V> for ReadZipperTracked<'a, '_, V, A> { type WitnessT = ReadZipperWitness<V, A>; zipper_impl_lens!(ZipperReadOnlyConditionalValues self => self.z, uid = self.uid); }
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperConcrete for ReadZipperTracked<'_, '_, V, A> { zipper_impl_lens!(ZipperConcrete self => self.z, uid = self.uid); }
 impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperPathBuffer for ReadZipperTracked<'trie, '_, V, A> { zipper_impl_lens!(ZipperPathBuffer self => self.z); }
-impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperIteration for ReadZipperTracked<'trie, '_, V, A> { zipper_impl_lens!(ZipperIteration self => self.z); }
+impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperIteration for ReadZipperTracked<'trie, '_, V, A> { zipper_impl_lens!(ZipperIteration self => self.z, uid = self.uid); }
 impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperReadOnlyConditionalIteration<'trie, V> for ReadZipperTracked<'trie, '_, V, A> { }
-impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperAbsolutePath for ReadZipperTracked<'trie, '_, V, A> { zipper_impl_lens!(ZipperAbsolutePath self => self.z); }
+impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperAbsolutePath for ReadZipperTracked<'trie, '_, V, A> { zipper_impl_lens!(ZipperAbsolutePath self => self.z, uid = self.uid); }
 
 
 impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperForking<V> for ReadZipperTracked<'_, '_, V, A>{
     type ReadZipperT<'a> = ReadZipperUntracked<'a, 'a, V, A> where Self: 'a;
     fn fork_read_zipper<'a>(&'a self) -> Option<Self::ReadZipperT<'a>> {
+        crate::trace::trace_point!(fork_read_zipper, self.uid);
         let forked_zipper = self.z.fork_read_zipper()?;
-        Some(Self::ReadZipperT::new_forked_with_inner_zipper(forked_zipper))
+        let child = Self::ReadZipperT::new_forked_with_inner_zipper(forked_zipper);
+        crate::trace::trace_point!(zipper_derive, child.trace_uid(), self.uid);
+        Some(child)
     }
 }
 
 impl<'a, V: Clone + Send + Sync + Unpin + 'a, A: Allocator + 'a> ZipperReadOnlySubtries<'a, V, A> for ReadZipperTracked<'a, '_, V, A> {
     type TrieRefT = TrieRefOwned<V, A>;
     fn trie_ref_at_path<K: AsRef<[u8]>>(&self, path: K) -> TrieRefOwned<V, A> {
+        crate::trace::trace_point!(trie_ref_at_path, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         let path = path.as_ref();
         TrieRefOwned::new_with_key_and_path_in(self.z.focus_parent(), self.val(), self.z.node_key(), path, self.z.alloc.clone())
     }
@@ -1651,16 +1672,16 @@ impl<'a, V: Clone + Send + Sync + Unpin + 'a, A: Allocator + 'a> ZipperReadOnlyP
 impl<'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> ReadZipperTracked<'a, 'path, V, A> {
     /// See [ReadZipperCore::new_isolated_in]
     pub(crate) fn new_isolated_in(root_node: &'a TrieNodeODRc<V, A>, path: &'path [u8], root_val: Option<&'a V>, alloc: A, tracker: Option<ZipperTracker<TrackingRead>>) -> Self {
-        Self { z: ReadZipperCore::new_isolated_in(root_node, path, root_val, alloc), tracker }
+        Self { uid: crate::trace::new_uid!(ReadZipperTracked), z: ReadZipperCore::new_isolated_in(root_node, path, root_val, alloc), tracker }
     }
     /// See [ReadZipperCore::new_isolated_cloned_path_in]
     pub(crate) fn new_isolated_cloned_path_in(root_node: &'a TrieNodeODRc<V, A>, path: &[u8], root_val: Option<&'a V>, alloc: A, tracker: Option<ZipperTracker<TrackingRead>>) -> Self {
-        Self { z: ReadZipperCore::new_isolated_cloned_path_in(root_node, path, root_val, alloc), tracker }
+        Self { uid: crate::trace::new_uid!(ReadZipperTracked), z: ReadZipperCore::new_isolated_cloned_path_in(root_node, path, root_val, alloc), tracker }
     }
     /// See [ReadZipperCore::new_with_node_and_cloned_path]
     pub(crate) fn new_with_node_and_cloned_path_in(root_node: &'a TrieNodeODRc<V, A>, owned_root: bool, path: &[u8], root_prefix_len: usize, root_key_start: usize, root_val: Option<&'a V>, alloc: A, tracker: Option<ZipperTracker<TrackingRead>>) -> Self {
         let core = ReadZipperCore::new_with_node_and_cloned_path_in(root_node, owned_root, path, root_prefix_len, root_key_start, root_val, alloc);
-        Self { z: core, tracker }
+        Self { uid: crate::trace::new_uid!(ReadZipperTracked), z: core, tracker }
     }
 
     /// Consumes the zipper and returns its reusable traversal buffers.
@@ -1678,7 +1699,7 @@ impl<'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> ReadZipperTra
     /// Same as [Clone::clone], but the new zipper stores its path and ancestor
     /// stack in the allocations held by `buffer`.
     pub fn clone_with_buffer(&self, buffer: ZipperBuffer<V, A>) -> Self {
-        Self { z: self.z.clone_with_buffer(buffer), tracker: self.tracker.clone() }
+        Self { uid: self.uid.clone(), z: self.z.clone_with_buffer(buffer), tracker: self.tracker.clone() }
     }
 }
 
@@ -1715,44 +1736,50 @@ impl_zipper_debug!(
 /// non-interference between zippers
 #[derive(Clone)]
 pub struct ReadZipperUntracked<'a, 'path, V: Clone + Send + Sync, A: Allocator = GlobalAlloc> {
+    /// Identifies the zipper in traces, see [crate::trace]
+    uid: crate::trace::ZipperUid,
     z: ReadZipperCore<'a, 'path, V, A>,
 }
 
-impl<V: Clone + Send + Sync + Unpin, A: Allocator> Zipper for ReadZipperUntracked<'_, '_, V, A> { zipper_impl_lens!(Zipper self => self.z); }
-impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperValues<V> for ReadZipperUntracked<'_, '_, V, A> { zipper_impl_lens!(ZipperValues self => self.z); }
-impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperValuesAt<V> for ReadZipperUntracked<'_, '_, V, A> { zipper_impl_lens!(ZipperValuesAt self => self.z); }
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> Zipper for ReadZipperUntracked<'_, '_, V, A> { zipper_impl_lens!(Zipper self => self.z, uid = self.uid); }
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperValues<V> for ReadZipperUntracked<'_, '_, V, A> { zipper_impl_lens!(ZipperValues self => self.z, uid = self.uid); }
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperValuesAt<V> for ReadZipperUntracked<'_, '_, V, A> { zipper_impl_lens!(ZipperValuesAt self => self.z, uid = self.uid); }
 impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperPathBuffer for ReadZipperUntracked<'trie, '_, V, A> { zipper_impl_lens!(ZipperPathBuffer self => self.z); }
-impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperIteration for ReadZipperUntracked<'trie, '_, V, A> { zipper_impl_lens!(ZipperIteration self => self.z); }
+impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperIteration for ReadZipperUntracked<'trie, '_, V, A> { zipper_impl_lens!(ZipperIteration self => self.z, uid = self.uid); }
 impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperReadOnlyConditionalIteration<'trie, V> for ReadZipperUntracked<'trie, '_, V, A> { }
-impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperAbsolutePath for ReadZipperUntracked<'trie, '_, V, A> { zipper_impl_lens!(ZipperAbsolutePath self => self.z); }
-impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperSubtries<V, A> for ReadZipperUntracked<'_, '_, V, A> { zipper_impl_lens!(ZipperSubtries self => self.z); }
-impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperInfallibleSubtries<V, A> for ReadZipperUntracked<'_, '_, V, A> { zipper_impl_lens!(ZipperInfallibleSubtries self => self.z); }
-impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperMoving for ReadZipperUntracked<'trie, '_, V, A> { zipper_impl_lens!(ZipperMoving self => self.z); }
-impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperPath for ReadZipperUntracked<'trie, '_, V, A> { zipper_impl_lens!(ZipperPath self => self.z); }
-impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperConcrete for ReadZipperUntracked<'_, '_, V, A> { zipper_impl_lens!(ZipperConcrete self => self.z); }
+impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperAbsolutePath for ReadZipperUntracked<'trie, '_, V, A> { zipper_impl_lens!(ZipperAbsolutePath self => self.z, uid = self.uid); }
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperSubtries<V, A> for ReadZipperUntracked<'_, '_, V, A> { zipper_impl_lens!(ZipperSubtries self => self.z, uid = self.uid); }
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperInfallibleSubtries<V, A> for ReadZipperUntracked<'_, '_, V, A> { zipper_impl_lens!(ZipperInfallibleSubtries self => self.z, uid = self.uid); }
+impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperMoving for ReadZipperUntracked<'trie, '_, V, A> { zipper_impl_lens!(ZipperMoving self => self.z, uid = self.uid); }
+impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperPath for ReadZipperUntracked<'trie, '_, V, A> { zipper_impl_lens!(ZipperPath self => self.z, uid = self.uid); }
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperConcrete for ReadZipperUntracked<'_, '_, V, A> { zipper_impl_lens!(ZipperConcrete self => self.z, uid = self.uid); }
 
 impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperForking<V> for ReadZipperUntracked<'_, '_, V, A> {
     type ReadZipperT<'a> = ReadZipperUntracked<'a, 'a, V, A> where Self: 'a;
     fn fork_read_zipper<'a>(&'a self) -> Option<Self::ReadZipperT<'a>> {
+        crate::trace::trace_point!(fork_read_zipper, self.uid);
         let forked_zipper = self.z.fork_read_zipper()?;
-        Some(Self::ReadZipperT::new_forked_with_inner_zipper(forked_zipper))
+        let child = Self::ReadZipperT::new_forked_with_inner_zipper(forked_zipper);
+        crate::trace::trace_point!(zipper_derive, child.trace_uid(), self.uid);
+        Some(child)
     }
 }
 
 impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperReadOnlyValues<'trie, V> for ReadZipperUntracked<'trie, '_, V, A> {
-    fn get_val(&self) -> Option<&'trie V> { unsafe{ self.z.get_val() } }
-    fn get_val_at<K: AsRef<[u8]>>(&self, path: K) -> Option<&'trie V> { unsafe{ self.z.get_val_at(path) } }
+    fn get_val(&self) -> Option<&'trie V> { crate::trace::trace_point!(get_val, self.uid); unsafe{ self.z.get_val() } }
+    fn get_val_at<K: AsRef<[u8]>>(&self, path: K) -> Option<&'trie V> { crate::trace::trace_point!(get_val_at, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len()); unsafe{ self.z.get_val_at(path) } }
 }
 
 impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperReadOnlyConditionalValues<'trie, V> for ReadZipperUntracked<'trie, '_, V, A> {
     type WitnessT = ();
     fn witness<'w>(&self) -> Self::WitnessT { () }
-    fn get_val_with_witness<'w>(&self, _witness: &'w Self::WitnessT) -> Option<&'w V> where 'trie: 'w { self.get_val() }
+    fn get_val_with_witness<'w>(&self, _witness: &'w Self::WitnessT) -> Option<&'w V> where 'trie: 'w { crate::trace::trace_point!(get_val_with_witness, self.uid); self.get_val() }
 }
 
 impl<'a, V: Clone + Send + Sync + Unpin + 'a, A: Allocator + 'a> ZipperReadOnlySubtries<'a, V, A> for ReadZipperUntracked<'a, '_, V, A> {
     type TrieRefT = TrieRefBorrowed<'a, V, A>;
     fn trie_ref_at_path<K: AsRef<[u8]>>(&self, path: K) -> TrieRefBorrowed<'a, V, A> {
+        crate::trace::trace_point!(trie_ref_at_path, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         let path = path.as_ref();
         TrieRefBorrowed::new_with_key_and_path_in(self.z.focus_parent_borrowed(), || self.get_val(), self.z.node_key(), path, self.z.alloc.clone())
     }
@@ -1769,29 +1796,29 @@ impl<'a, V: Clone + Send + Sync + Unpin + 'a, A: Allocator + 'a> ZipperReadOnlyP
 
 
 impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperReadOnlyIteration<'trie, V> for ReadZipperUntracked<'trie, '_, V, A> {
-    fn to_next_get_val_observed<Obs: PathObserver>(&mut self, obs: &mut Obs) -> Option<&'trie V> { unsafe{ self.z.to_next_get_val_observed(obs) } }
+    fn to_next_get_val_observed<Obs: PathObserver>(&mut self, obs: &mut Obs) -> Option<&'trie V> { crate::trace::trace_point!(to_next_get_val_observed, self.uid); unsafe{ self.z.to_next_get_val_observed(obs) } }
 }
 
 impl<'a, 'path, V: Clone + Send + Sync + Unpin + 'a, A: Allocator + 'a> ReadZipperUntracked<'a, 'path, V, A> {
     /// See [ReadZipperCore::new_with_node_and_path]
     pub(crate) fn new_with_node_and_path_in(root_node: &'a TrieNodeODRc<V, A>, path: &'path [u8], root_prefix_len: usize, root_key_start: usize, root_val: Option<&'a V>, alloc: A) -> Self {
         let core = ReadZipperCore::new_with_node_and_path_in(root_node, false, path, root_prefix_len, root_key_start, root_val, alloc);
-        Self { z: core }
+        Self { uid: crate::trace::new_uid!(ReadZipperUntracked), z: core }
     }
     /// See [ReadZipperCore::new_with_node_and_path_internal]
     pub(crate) fn new_with_node_and_path_internal_in(root_node: &'a TrieNodeODRc<V, A>, path: &'path [u8], root_key_start: usize, root_val: Option<&'a V>, alloc: A) -> Self {
         let core = ReadZipperCore::new_with_node_and_path_internal_in(OwnedOrBorrowed::Borrowed(root_node), path, root_key_start, root_val, alloc);
-        Self { z: core }
+        Self { uid: crate::trace::new_uid!(ReadZipperUntracked), z: core }
     }
     /// See [ReadZipperCore::new_with_node_and_cloned_path]
     pub(crate) fn new_with_node_and_cloned_path_in(root_node: &'a TrieNodeODRc<V, A>, path: &[u8], root_prefix_len: usize, root_key_start: usize, root_val: Option<&'a V>, alloc: A) -> Self {
         let core = ReadZipperCore::new_with_node_and_cloned_path_in(root_node, false, path, root_prefix_len, root_key_start, root_val, alloc);
-        Self { z: core }
+        Self { uid: crate::trace::new_uid!(ReadZipperUntracked), z: core }
     }
     /// Makes a new `ReadZipperUntracked` for use in the implementation of [ZipperForking::fork_read_zipper].
     /// Forked zippers never need to be tracked because they are always fully covered by their parent's permissions
     pub(crate) fn new_forked_with_inner_zipper(core: ReadZipperCore<'a, 'path, V, A>) -> Self {
-        ReadZipperUntracked{ z: core }
+        ReadZipperUntracked{ uid: crate::trace::new_uid!(ReadZipperUntracked), z: core }
     }
 
     /// Creates a new zipper at the root of `map`, reusing the allocations held by `buffer`.
@@ -1810,7 +1837,7 @@ impl<'a, 'path, V: Clone + Send + Sync + Unpin + 'a, A: Allocator + 'a> ReadZipp
     /// Same as [Clone::clone], but the new zipper stores its path and ancestor
     /// stack in the allocations held by `buffer`.
     pub fn clone_with_buffer(&self, buffer: ZipperBuffer<V, A>) -> Self {
-        Self { z: self.z.clone_with_buffer(buffer) }
+        Self { uid: self.uid.clone(), z: self.z.clone_with_buffer(buffer) }
     }
 }
 
@@ -1862,6 +1889,8 @@ impl_zipper_debug!(
 // Then, ReadZipperTracked is then just a ReadZipperOwned plus a tracker
 //**UPDATE** TOo early to make this change; because the root value still lives outside the ReadZipper.  We could move to an owned root value, like we did for TrieRefOwned, but I would rather just push ahead with moving root values inside nodes.  For now I am just trying to get to the right external API.
 pub struct ReadZipperOwned<V: Clone + Send + Sync + 'static, A: Allocator + 'static = GlobalAlloc> {
+    /// Identifies the zipper in traces, see [crate::trace]
+    uid: crate::trace::ZipperUid,
     map: MaybeDangling<Box<PathMap<V, A>>>,
     // NOTE About this Box around the WriteZipperCore... The reason this is needed is for the
     // [WriteZipperOwned::into_map] method.  This box effectively provides a fence, ensuring that the
@@ -1877,13 +1906,17 @@ pub struct ReadZipperOwned<V: Clone + Send + Sync + 'static, A: Allocator + 'sta
 impl<V: 'static + Clone + Send + Sync + Unpin, A: Allocator> Clone for ReadZipperOwned<V, A> {
     fn clone(&self) -> Self {
         let new_map = (**self.map).clone();
-        Self::new_with_map(new_map, self.root_prefix_path())
+        Self::new_with_map_and_uid(new_map, self.root_prefix_path(), self.uid.clone())
     }
 }
 
 impl<V: 'static + Clone + Send + Sync + Unpin, A: Allocator> ReadZipperOwned<V, A> {
     /// See [ReadZipperCore::new_with_node_and_cloned_path]
     pub(crate) fn new_with_map<K: AsRef<[u8]>>(map: PathMap<V, A>, path: K) -> Self {
+        Self::new_with_map_and_uid(map, path, crate::trace::new_uid!(ReadZipperOwned))
+    }
+    #[inline(always)]
+    fn new_with_map_and_uid<K: AsRef<[u8]>>(map: PathMap<V, A>, path: K, uid: crate::trace::ZipperUid) -> Self {
         map.ensure_root();
         let alloc = map.alloc.clone();
         let path = path.as_ref();
@@ -1891,7 +1924,7 @@ impl<V: 'static + Clone + Send + Sync + Unpin, A: Allocator> ReadZipperOwned<V, 
         let root_ref = unsafe{ &*(*map).root.get() }.as_ref().unwrap();
         let root_val = Option::as_ref( unsafe{ &*(*map).root_val.get() } );
         let core = ReadZipperCore::new_with_node_and_cloned_path_in(root_ref, true, path, path.len(), 0, root_val, alloc);
-        Self { map, z: Box::new(core) }
+        Self { uid, map, z: Box::new(core) }
     }
     /// Consumes the zipper and returns a map contained within the zipper
     pub fn into_map(self) -> PathMap<V, A> {
@@ -1907,43 +1940,47 @@ impl<V: 'static + Clone + Send + Sync + Unpin, A: Allocator> ReadZipperOwned<V, 
 }
 
 
-impl<V: Clone + Send + Sync + Unpin, A: Allocator> Zipper for ReadZipperOwned<V, A> { zipper_impl_lens!(Zipper self => self.z); }
-impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperSubtries<V, A> for ReadZipperOwned<V, A> { zipper_impl_lens!(ZipperSubtries self => self.z); }
-impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperInfallibleSubtries<V, A> for ReadZipperOwned<V, A> { zipper_impl_lens!(ZipperInfallibleSubtries self => self.z); }
-impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperMoving for ReadZipperOwned<V, A> { zipper_impl_lens!(ZipperMoving self => self.z); }
-impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperPath for ReadZipperOwned<V, A> { zipper_impl_lens!(ZipperPath self => self.z); }
-impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperConcrete for ReadZipperOwned<V, A> { zipper_impl_lens!(ZipperConcrete self => self.z); }
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> Zipper for ReadZipperOwned<V, A> { zipper_impl_lens!(Zipper self => self.z, uid = self.uid); }
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperSubtries<V, A> for ReadZipperOwned<V, A> { zipper_impl_lens!(ZipperSubtries self => self.z, uid = self.uid); }
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperInfallibleSubtries<V, A> for ReadZipperOwned<V, A> { zipper_impl_lens!(ZipperInfallibleSubtries self => self.z, uid = self.uid); }
+impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperMoving for ReadZipperOwned<V, A> { zipper_impl_lens!(ZipperMoving self => self.z, uid = self.uid); }
+impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperPath for ReadZipperOwned<V, A> { zipper_impl_lens!(ZipperPath self => self.z, uid = self.uid); }
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperConcrete for ReadZipperOwned<V, A> { zipper_impl_lens!(ZipperConcrete self => self.z, uid = self.uid); }
 impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperPathBuffer for ReadZipperOwned<V, A> { zipper_impl_lens!(ZipperPathBuffer self => self.z); }
-impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperIteration for ReadZipperOwned<V, A> { zipper_impl_lens!(ZipperIteration self => self.z); }
+impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperIteration for ReadZipperOwned<V, A> { zipper_impl_lens!(ZipperIteration self => self.z, uid = self.uid); }
 impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperReadOnlyConditionalIteration<'trie, V> for ReadZipperOwned<V, A> { }
-impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperAbsolutePath for ReadZipperOwned<V, A> { zipper_impl_lens!(ZipperAbsolutePath self => self.z); }
+impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperAbsolutePath for ReadZipperOwned<V, A> { zipper_impl_lens!(ZipperAbsolutePath self => self.z, uid = self.uid); }
 
 
 impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperValues<V> for ReadZipperOwned<V, A> {
-    fn val(&self) -> Option<&V> { unsafe{ self.z.get_val() } }
+    fn val(&self) -> Option<&V> { crate::trace::trace_point!(val, self.uid); unsafe{ self.z.get_val() } }
 }
 
 impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperValuesAt<V> for ReadZipperOwned<V, A> {
-    fn val_at<K: AsRef<[u8]>>(&self, path: K) -> Option<&V> { unsafe{ self.z.get_val_at(path) } }
+    fn val_at<K: AsRef<[u8]>>(&self, path: K) -> Option<&V> { crate::trace::trace_point!(val_at, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len()); unsafe{ self.z.get_val_at(path) } }
 }
 
 impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperForking<V> for ReadZipperOwned<V, A> {
     type ReadZipperT<'a> = ReadZipperUntracked<'a, 'a, V, A> where Self: 'a;
     fn fork_read_zipper<'a>(&'a self) -> Option<Self::ReadZipperT<'a>> {
+        crate::trace::trace_point!(fork_read_zipper, self.uid);
         let forked_zipper = self.z.fork_read_zipper()?;
-        Some(Self::ReadZipperT::new_forked_with_inner_zipper(forked_zipper))
+        let child = Self::ReadZipperT::new_forked_with_inner_zipper(forked_zipper);
+        crate::trace::trace_point!(zipper_derive, child.trace_uid(), self.uid);
+        Some(child)
     }
 }
 
 impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperReadOnlyConditionalValues<'trie, V> for ReadZipperOwned<V, A> {
     type WitnessT = ReadZipperWitness<V, A>;
     fn witness<'w>(&self) -> ReadZipperWitness<V, A> { self.z.witness() }
-    fn get_val_with_witness<'w>(&self, witness: &'w ReadZipperWitness<V, A>) -> Option<&'w V> where 'trie: 'w { self.z.get_val_with_witness(witness) }
+    fn get_val_with_witness<'w>(&self, witness: &'w ReadZipperWitness<V, A>) -> Option<&'w V> where 'trie: 'w { crate::trace::trace_point!(get_val_with_witness, self.uid); self.z.get_val_with_witness(witness) }
 }
 
 impl<'a, V: Clone + Send + Sync + Unpin, A: Allocator> ZipperReadOnlySubtries<'a, V, A> for ReadZipperOwned<V, A> where Self: 'a {
     type TrieRefT = TrieRefOwned<V, A>;
     fn trie_ref_at_path<K: AsRef<[u8]>>(&self, path: K) -> TrieRefOwned<V, A> {
+        crate::trace::trace_point!(trie_ref_at_path, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         let path = path.as_ref();
         TrieRefOwned::new_with_key_and_path_in(self.z.focus_parent(), self.val(), self.z.node_key(), path, self.z.alloc.clone())
     }

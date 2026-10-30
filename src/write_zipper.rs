@@ -453,6 +453,8 @@ unsafe impl<V: Clone + Send + Sync, A: Allocator> Sync for WriteZipperBuffer<V, 
 
 /// A [write zipper](ZipperWriting) type for editing and adding paths and values in the trie
 pub struct WriteZipperTracked<'a, 'path, V: Clone + Send + Sync, A: Allocator = GlobalAlloc> {
+    /// Identifies the zipper in traces, see [crate::trace]
+    uid: crate::trace::ZipperUid,
     z: WriteZipperCore<'a, 'path, V, A>,
     _tracker: Option<ZipperTracker<TrackingWrite>>,
 }
@@ -463,64 +465,68 @@ impl<V: Clone + Send + Sync, A: Allocator> Drop for WriteZipperTracked<'_, '_, V
 }
 
 impl<'a, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> Zipper for WriteZipperTracked<'a, '_, V, A>{
-    fn path_exists(&self) -> bool { self.z.path_exists() }
-    fn is_val(&self) -> bool { self.z.is_val() }
-    fn child_count(&self) -> usize { self.z.child_count() }
-    fn child_mask(&self) -> ByteMask { self.z.child_mask() }
+    fn trace_uid(&self) -> u64 { self.uid.get() }
+    fn path_exists(&self) -> bool { crate::trace::trace_point!(path_exists, self.uid); self.z.path_exists() }
+    fn is_val(&self) -> bool { crate::trace::trace_point!(is_val, self.uid); self.z.is_val() }
+    fn child_count(&self) -> usize { crate::trace::trace_point!(child_count, self.uid); self.z.child_count() }
+    fn child_mask(&self) -> ByteMask { crate::trace::trace_point!(child_mask, self.uid); self.z.child_mask() }
 }
 
 impl<'a, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> ZipperValues<V> for WriteZipperTracked<'a, '_, V, A>{
-    fn val(&self) -> Option<&V> { self.z.val() }
+    fn val(&self) -> Option<&V> { crate::trace::trace_point!(val, self.uid); self.z.val() }
 }
 
 impl<'a, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> ZipperValuesAt<V> for WriteZipperTracked<'a, '_, V, A>{
-    fn val_at<K: AsRef<[u8]>>(&self, path: K) -> Option<&V> { self.z.val_at(path) }
+    fn val_at<K: AsRef<[u8]>>(&self, path: K) -> Option<&V> { crate::trace::trace_point!(val_at, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len()); self.z.val_at(path) }
 }
 
 impl<'trie, V: Clone + Send + Sync + Unpin, A: Allocator + 'trie> ZipperForking<V> for WriteZipperTracked<'trie, '_, V, A>{
     type ReadZipperT<'a> = ReadZipperUntracked<'a, 'a, V, A> where Self: 'a;
     fn fork_read_zipper<'a>(&'a self) -> Option<Self::ReadZipperT<'a>> {
+        crate::trace::trace_point!(fork_read_zipper, self.uid);
         let rz_core = self.z.fork_read_zipper()?;
-        Some(Self::ReadZipperT::new_forked_with_inner_zipper(rz_core))
+        let child = Self::ReadZipperT::new_forked_with_inner_zipper(rz_core);
+        crate::trace::trace_point!(zipper_derive, child.trace_uid(), self.uid);
+        Some(child)
     }
 }
 
 impl<'a, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> ZipperSubtries<V, A> for WriteZipperTracked<'a, '_, V, A>{
     fn native_subtries(&self) -> bool { true }
-    fn try_make_map(&self) -> Option<PathMap<V, A>> { Some(self.z.make_map()) }
-    fn trie_ref(&self) -> Option<TrieRef<'_, V, A>> { Some(self.z.get_trie_ref()) }
+    fn try_make_map(&self) -> Option<PathMap<V, A>> { crate::trace::trace_point!(try_make_map, self.uid); Some(self.z.make_map()) }
+    fn trie_ref(&self) -> Option<TrieRef<'_, V, A>> { crate::trace::trace_point!(trie_ref, self.uid); Some(self.z.get_trie_ref()) }
     fn alloc(&self) -> A { self.z.alloc.clone() }
 }
 
 impl<'a, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> ZipperInfallibleSubtries<V, A> for WriteZipperTracked<'a, '_, V, A>{
-    fn make_map(&self) -> PathMap<V, A> { self.z.make_map() }
-    fn get_trie_ref(&self) -> TrieRef<'_, V, A> { self.z.get_trie_ref() }
-    fn get_focus(&self) -> OpaqueAbstractNodeRef<'_, V, A> { self.z.get_focus() }
-    fn get_focus_at<K: AsRef<[u8]>>(&self, path: K) -> OpaqueAbstractNodeRef<'_, V, A> { self.z.get_focus_at(path) }
-    fn try_borrow_focus(&self) -> Option<OpaqueTrieNodeRef<'_, V, A>> { self.z.try_borrow_focus() }
+    fn make_map(&self) -> PathMap<V, A> { crate::trace::trace_point!(make_map, self.uid); self.z.make_map() }
+    fn get_trie_ref(&self) -> TrieRef<'_, V, A> { crate::trace::trace_point!(get_trie_ref, self.uid); self.z.get_trie_ref() }
+    fn get_focus(&self) -> OpaqueAbstractNodeRef<'_, V, A> { crate::trace::trace_point!(get_focus, self.uid); self.z.get_focus() }
+    fn get_focus_at<K: AsRef<[u8]>>(&self, path: K) -> OpaqueAbstractNodeRef<'_, V, A> { crate::trace::trace_point!(get_focus_at, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len()); self.z.get_focus_at(path) }
+    fn try_borrow_focus(&self) -> Option<OpaqueTrieNodeRef<'_, V, A>> { crate::trace::trace_point!(try_borrow_focus, self.uid); self.z.try_borrow_focus() }
 }
 
 impl<'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> ZipperMoving for WriteZipperTracked<'a, 'path, V, A> {
-    #[inline] fn depth(&self) -> usize { self.z.depth() }
-    fn at_root(&self) -> bool { self.z.at_root() }
-    #[inline] fn focus_byte(&self) -> Option<u8> { self.z.focus_byte() }
-    fn reset(&mut self) { self.z.reset() }
-    fn val_count(&self) -> usize { self.z.val_count() }
-    fn descend_to<K: AsRef<[u8]>>(&mut self, k: K) { self.z.descend_to(k) }
-    fn descend_to_byte(&mut self, k: u8) { self.z.descend_to_byte(k) }
-    fn descend_indexed_byte(&mut self, child_idx: usize) -> Option<u8> { self.z.descend_indexed_byte(child_idx) }
-    fn descend_first_byte(&mut self) -> Option<u8> { self.z.descend_first_byte() }
-    fn descend_until_observed<Obs: PathObserver>(&mut self, obs: &mut Obs) -> bool { self.z.descend_until_observed(obs) }
-    fn to_next_sibling_byte(&mut self) -> Option<u8> { self.z.to_next_sibling_byte() }
-    fn to_prev_sibling_byte(&mut self) -> Option<u8> { self.z.to_prev_sibling_byte() }
-    fn ascend(&mut self, steps: usize) -> usize { self.z.ascend(steps) }
-    fn ascend_byte(&mut self) -> bool { self.z.ascend_byte() }
-    fn ascend_until(&mut self) -> usize { self.z.ascend_until() }
-    fn ascend_until_branch(&mut self) -> usize { self.z.ascend_until_branch() }
+    #[inline] fn depth(&self) -> usize { crate::trace::trace_point!(depth, self.uid); self.z.depth() }
+    fn at_root(&self) -> bool { crate::trace::trace_point!(at_root, self.uid); self.z.at_root() }
+    #[inline] fn focus_byte(&self) -> Option<u8> { crate::trace::trace_point!(focus_byte, self.uid); self.z.focus_byte() }
+    fn reset(&mut self) { crate::trace::trace_point!(reset, self.uid); self.z.reset() }
+    fn val_count(&self) -> usize { crate::trace::trace_point!(val_count, self.uid); self.z.val_count() }
+    fn descend_to<K: AsRef<[u8]>>(&mut self, k: K) { crate::trace::trace_point!(descend_to, self.uid, AsRef::<[u8]>::as_ref(&k).as_ptr(), AsRef::<[u8]>::as_ref(&k).len()); self.z.descend_to(k) }
+    fn descend_to_byte(&mut self, k: u8) { crate::trace::trace_point!(descend_to_byte, self.uid, k); self.z.descend_to_byte(k) }
+    fn descend_indexed_byte(&mut self, child_idx: usize) -> Option<u8> { crate::trace::trace_point!(descend_indexed_byte, self.uid, child_idx); self.z.descend_indexed_byte(child_idx) }
+    fn descend_first_byte(&mut self) -> Option<u8> { crate::trace::trace_point!(descend_first_byte, self.uid); self.z.descend_first_byte() }
+    fn descend_until_observed<Obs: PathObserver>(&mut self, obs: &mut Obs) -> bool { crate::trace::trace_point!(descend_until_observed, self.uid); self.z.descend_until_observed(obs) }
+    fn to_next_sibling_byte(&mut self) -> Option<u8> { crate::trace::trace_point!(to_next_sibling_byte, self.uid); self.z.to_next_sibling_byte() }
+    fn to_prev_sibling_byte(&mut self) -> Option<u8> { crate::trace::trace_point!(to_prev_sibling_byte, self.uid); self.z.to_prev_sibling_byte() }
+    fn ascend(&mut self, steps: usize) -> usize { crate::trace::trace_point!(ascend, self.uid, steps); self.z.ascend(steps) }
+    fn ascend_byte(&mut self) -> bool { crate::trace::trace_point!(ascend_byte, self.uid); self.z.ascend_byte() }
+    fn ascend_until(&mut self) -> usize { crate::trace::trace_point!(ascend_until, self.uid); self.z.ascend_until() }
+    fn ascend_until_branch(&mut self) -> usize { crate::trace::trace_point!(ascend_until_branch, self.uid); self.z.ascend_until_branch() }
 }
 
 impl<'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> ZipperPath for WriteZipperTracked<'a, 'path, V, A> {
-    fn path(&self) -> &[u8] { self.z.path() }
+    fn path(&self) -> &[u8] { crate::trace::trace_point!(path, self.uid); self.z.path() }
 }
 
 impl<'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> ZipperPathBuffer for WriteZipperTracked<'a, 'path, V, A> {
@@ -530,8 +536,8 @@ impl<'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> ZipperPathBuf
 }
 
 impl<'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> ZipperAbsolutePath for WriteZipperTracked<'a, 'path, V, A> {
-    fn origin_path(&self) -> &[u8] { self.z.origin_path() }
-    fn root_prefix_path(&self) -> &[u8] { self.z.root_prefix_path() }
+    fn origin_path(&self) -> &[u8] { crate::trace::trace_point!(origin_path, self.uid); self.z.origin_path() }
+    fn root_prefix_path(&self) -> &[u8] { crate::trace::trace_point!(root_prefix_path, self.uid); self.z.root_prefix_path() }
 }
 
 impl<'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> WriteZipperTracked<'a, 'path, V, A> {
@@ -556,6 +562,8 @@ impl<'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> WriteZipperTr
     ///
     /// The returned read zipper will have the same root and focus as the the consumed write zipper.
     pub fn into_read_zipper(mut self) -> ReadZipperTracked<'a, 'static, V, A> {
+        #[allow(unused_variables)] // only read by trace points
+        let parent_uid = self.uid.snapshot();
         let tracker = self._tracker.take().unwrap().into_reader();
         let root_node = self.z.focus_stack.take_root().unwrap();
         let root_path = &self.z.key.prefix_buf[..self.z.key.origin_path.len()];
@@ -565,6 +573,7 @@ impl<'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> WriteZipperTr
 
         let mut new_zipper = ReadZipperTracked::new_with_node_and_cloned_path_in(root_node, false, root_path, root_path.len(), self.z.key.root_key_start, root_val, self.z.alloc.clone(), Some(tracker));
         new_zipper.descend_to(descended_path);
+        crate::trace::trace_point!(zipper_derive, new_zipper.trace_uid(), parent_uid);
         new_zipper
     }
 }
@@ -573,12 +582,12 @@ impl<'a, V: Clone + Send + Sync + Unpin, A: Allocator> WriteZipperTracked<'a, 's
     /// Same as [WriteZipperUntracked::new_with_node_and_path_internal], but clones the path so the `'path` lifetime isn't needed
     pub(crate) fn new_with_node_and_cloned_path_internal_in(root_node: &'a mut TrieNodeODRc<V, A>, root_val: Option<&'a mut Option<V>>, path: &[u8], root_key_start: usize, alloc: A, tracker: Option<ZipperTracker<TrackingWrite>>) -> Self {
         let core = WriteZipperCore::<'a, 'static, V, A>::new_with_node_and_cloned_path_internal_in(root_node, root_val, path, root_key_start, alloc);
-        Self { z: core, _tracker: tracker }
+        Self { uid: crate::trace::new_uid!(WriteZipperTracked), z: core, _tracker: tracker }
     }
     /// Same as [Self::new_with_node_and_cloned_path_internal_in], but reuses the allocations held by `buffer`
     pub(crate) fn new_with_node_and_buffer_internal_in(root_node: &'a mut TrieNodeODRc<V, A>, root_val: Option<&'a mut Option<V>>, path: &[u8], root_key_start: usize, alloc: A, buffer: WriteZipperBuffer<V, A>, tracker: Option<ZipperTracker<TrackingWrite>>) -> Self {
         let core = WriteZipperCore::<'a, 'static, V, A>::new_with_node_and_buffer_internal_in(root_node, root_val, path, root_key_start, alloc, buffer);
-        Self { z: core, _tracker: tracker }
+        Self { uid: crate::trace::new_uid!(WriteZipperTracked), z: core, _tracker: tracker }
     }
 }
 
@@ -594,37 +603,37 @@ impl<'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator> WriteZipperTracked
 
 impl<'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> ZipperWriting<V, A> for WriteZipperTracked<'a, 'path, V, A> {
     type ZipperHead<'z> = ZipperHead<'z, 'a, V, A> where Self: 'z;
-    fn get_val_mut(&mut self) -> Option<&mut V> { self.z.get_val_mut() }
-    fn get_val_or_set_mut(&mut self, default: V) -> &mut V { self.z.get_val_or_set_mut(default) }
-    fn get_val_or_set_mut_with<F>(&mut self, func: F) -> &mut V where F: FnOnce() -> V { self.z.get_val_or_set_mut_with(func) }
-    fn set_val(&mut self, val: V) -> Option<V> { self.z.set_val(val) }
-    fn set_val_at<K: AsRef<[u8]>>(&mut self, path: K, val: V) -> Option<V> { self.z.set_val_at(path, val) }
-    fn remove_val(&mut self, prune: bool) -> Option<V> { self.z.remove_val(prune) }
-    fn zipper_head<'z>(&'z mut self) -> Self::ZipperHead<'z> { self.z.zipper_head() }
-    fn graft<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) { self.z.graft(read_zipper) }
-    fn graft_src_at<Z: ZipperInfallibleSubtries<V, A>, K: AsRef<[u8]>>(&mut self, src: &Z, path: K) { self.z.graft_src_at(src, path) }
-    fn graft_map(&mut self, map: PathMap<V, A>) { self.z.graft_map(map) }
-    fn graft_masked_branches<Z: ZipperInfallibleSubtries<V, A>>(&mut self, src: &Z, child_mask: ByteMask, remove_unset: bool) { self.z.graft_masked_branches(src, child_mask, remove_unset) }
-    fn graft_child_maps<I: IntoIterator<Item=PathMap<V, A>>>(&mut self, child_mask: ByteMask, maps: I, remove_unset: bool) { self.z.graft_child_maps(child_mask, maps, remove_unset) }
-    fn join_into<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) -> AlgebraicStatus where V: Lattice { self.z.join_into(read_zipper) }
-    fn join_map_into(&mut self, map: PathMap<V, A>) -> AlgebraicStatus where V: Lattice { self.z.join_map_into(map) }
-    fn join_into_take<Z: ZipperInfallibleSubtries<V, A> + ZipperWriting<V, A>>(&mut self, src_zipper: &mut Z, prune: bool) -> AlgebraicStatus where V: Lattice { self.z.join_into_take(src_zipper, prune) }
-    fn join_k_path_into(&mut self, byte_cnt: usize, prune: bool) -> bool where V: Lattice { self.z.join_k_path_into(byte_cnt, prune) }
-    fn meet_k_path_into(&mut self, byte_cnt: usize, prune: bool) -> bool where V: Lattice { self.z.meet_k_path_into(byte_cnt, prune) }
-    fn insert_prefix<K: AsRef<[u8]>>(&mut self, prefix: K) -> bool { self.z.insert_prefix(prefix) }
-    fn remove_prefix(&mut self, n: usize) -> bool { self.z.remove_prefix(n) }
-    fn meet_into<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z, prune: bool) -> AlgebraicStatus where V: Lattice { self.z.meet_into(read_zipper, prune) }
-    fn meet_2<ZA: ZipperInfallibleSubtries<V, A>, ZB: ZipperInfallibleSubtries<V, A>>(&mut self, rz_a: &ZA, rz_b: &ZB) -> AlgebraicStatus where V: Lattice { self.z.meet_2(rz_a, rz_b) }
-    fn subtract_into<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z, prune: bool) -> AlgebraicStatus where V: DistributiveLattice { self.z.subtract_into(read_zipper, prune) }
-    fn restrict<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) -> AlgebraicStatus { self.z.restrict(read_zipper) }
-    fn restricting<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) -> bool { self.z.restricting(read_zipper) }
-    fn take_map(&mut self, prune: bool) -> Option<PathMap<V, A>> { self.z.take_map(prune) }
-    fn remove_branches(&mut self, prune: bool) -> bool { self.z.remove_branches(prune) }
-    fn remove_subtrie(&mut self, prune: bool) -> bool { self.z.remove_subtrie(prune) }
-    fn remove_unmasked_branches(&mut self, mask: ByteMask, prune: bool) { self.z.remove_unmasked_branches(mask, prune) }
-    fn create_path(&mut self) -> bool { self.z.create_path() }
-    fn prune_path(&mut self) -> usize { self.z.prune_path() }
-    fn prune_ascend(&mut self) -> usize { self.z.prune_ascend() }
+    fn get_val_mut(&mut self) -> Option<&mut V> { crate::trace::trace_point!(get_val_mut, self.uid); self.z.get_val_mut() }
+    fn get_val_or_set_mut(&mut self, default: V) -> &mut V { crate::trace::trace_point!(get_val_or_set_mut, self.uid, core::ptr::from_ref(&default)); self.z.get_val_or_set_mut(default) }
+    fn get_val_or_set_mut_with<F>(&mut self, func: F) -> &mut V where F: FnOnce() -> V { crate::trace::trace_point!(get_val_or_set_mut_with, self.uid); self.z.get_val_or_set_mut_with(func) }
+    fn set_val(&mut self, val: V) -> Option<V> { crate::trace::trace_point!(set_val, self.uid, core::ptr::from_ref(&val)); self.z.set_val(val) }
+    fn set_val_at<K: AsRef<[u8]>>(&mut self, path: K, val: V) -> Option<V> { crate::trace::trace_point!(set_val_at, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len(), core::ptr::from_ref(&val)); self.z.set_val_at(path, val) }
+    fn remove_val(&mut self, prune: bool) -> Option<V> { crate::trace::trace_point!(remove_val, self.uid, prune); self.z.remove_val(prune) }
+    fn zipper_head<'z>(&'z mut self) -> Self::ZipperHead<'z> { crate::trace::trace_point!(zipper_head, self.uid); self.z.zipper_head() }
+    fn graft<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) { crate::trace::trace_point!(graft, self.uid, crate::zipper::Zipper::trace_uid(&*read_zipper)); self.z.graft(read_zipper) }
+    fn graft_src_at<Z: ZipperInfallibleSubtries<V, A>, K: AsRef<[u8]>>(&mut self, src: &Z, path: K) { crate::trace::trace_point!(graft_src_at, self.uid, crate::zipper::Zipper::trace_uid(&*src), AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len()); self.z.graft_src_at(src, path) }
+    fn graft_map(&mut self, map: PathMap<V, A>) { crate::trace::trace_point!(graft_map, self.uid); self.z.graft_map(map) }
+    fn graft_masked_branches<Z: ZipperInfallibleSubtries<V, A>>(&mut self, src: &Z, child_mask: ByteMask, remove_unset: bool) { crate::trace::trace_point!(graft_masked_branches, self.uid, crate::zipper::Zipper::trace_uid(&*src), core::ptr::from_ref(&child_mask), remove_unset); self.z.graft_masked_branches(src, child_mask, remove_unset) }
+    fn graft_child_maps<I: IntoIterator<Item=PathMap<V, A>>>(&mut self, child_mask: ByteMask, maps: I, remove_unset: bool) { crate::trace::trace_point!(graft_child_maps, self.uid, core::ptr::from_ref(&child_mask), remove_unset); self.z.graft_child_maps(child_mask, maps, remove_unset) }
+    fn join_into<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) -> AlgebraicStatus where V: Lattice { crate::trace::trace_point!(join_into, self.uid, crate::zipper::Zipper::trace_uid(&*read_zipper)); self.z.join_into(read_zipper) }
+    fn join_map_into(&mut self, map: PathMap<V, A>) -> AlgebraicStatus where V: Lattice { crate::trace::trace_point!(join_map_into, self.uid); self.z.join_map_into(map) }
+    fn join_into_take<Z: ZipperInfallibleSubtries<V, A> + ZipperWriting<V, A>>(&mut self, src_zipper: &mut Z, prune: bool) -> AlgebraicStatus where V: Lattice { crate::trace::trace_point!(join_into_take, self.uid, crate::zipper::Zipper::trace_uid(&*src_zipper), prune); self.z.join_into_take(src_zipper, prune) }
+    fn join_k_path_into(&mut self, byte_cnt: usize, prune: bool) -> bool where V: Lattice { crate::trace::trace_point!(join_k_path_into, self.uid, byte_cnt, prune); self.z.join_k_path_into(byte_cnt, prune) }
+    fn meet_k_path_into(&mut self, byte_cnt: usize, prune: bool) -> bool where V: Lattice { crate::trace::trace_point!(meet_k_path_into, self.uid, byte_cnt, prune); self.z.meet_k_path_into(byte_cnt, prune) }
+    fn insert_prefix<K: AsRef<[u8]>>(&mut self, prefix: K) -> bool { crate::trace::trace_point!(insert_prefix, self.uid, AsRef::<[u8]>::as_ref(&prefix).as_ptr(), AsRef::<[u8]>::as_ref(&prefix).len()); self.z.insert_prefix(prefix) }
+    fn remove_prefix(&mut self, n: usize) -> bool { crate::trace::trace_point!(remove_prefix, self.uid, n); self.z.remove_prefix(n) }
+    fn meet_into<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z, prune: bool) -> AlgebraicStatus where V: Lattice { crate::trace::trace_point!(meet_into, self.uid, crate::zipper::Zipper::trace_uid(&*read_zipper), prune); self.z.meet_into(read_zipper, prune) }
+    fn meet_2<ZA: ZipperInfallibleSubtries<V, A>, ZB: ZipperInfallibleSubtries<V, A>>(&mut self, rz_a: &ZA, rz_b: &ZB) -> AlgebraicStatus where V: Lattice { crate::trace::trace_point!(meet_2, self.uid, crate::zipper::Zipper::trace_uid(&*rz_a), crate::zipper::Zipper::trace_uid(&*rz_b)); self.z.meet_2(rz_a, rz_b) }
+    fn subtract_into<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z, prune: bool) -> AlgebraicStatus where V: DistributiveLattice { crate::trace::trace_point!(subtract_into, self.uid, crate::zipper::Zipper::trace_uid(&*read_zipper), prune); self.z.subtract_into(read_zipper, prune) }
+    fn restrict<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) -> AlgebraicStatus { crate::trace::trace_point!(restrict, self.uid, crate::zipper::Zipper::trace_uid(&*read_zipper)); self.z.restrict(read_zipper) }
+    fn restricting<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) -> bool { crate::trace::trace_point!(restricting, self.uid, crate::zipper::Zipper::trace_uid(&*read_zipper)); self.z.restricting(read_zipper) }
+    fn take_map(&mut self, prune: bool) -> Option<PathMap<V, A>> { crate::trace::trace_point!(take_map, self.uid, prune); self.z.take_map(prune) }
+    fn remove_branches(&mut self, prune: bool) -> bool { crate::trace::trace_point!(remove_branches, self.uid, prune); self.z.remove_branches(prune) }
+    fn remove_subtrie(&mut self, prune: bool) -> bool { crate::trace::trace_point!(remove_subtrie, self.uid, prune); self.z.remove_subtrie(prune) }
+    fn remove_unmasked_branches(&mut self, mask: ByteMask, prune: bool) { crate::trace::trace_point!(remove_unmasked_branches, self.uid, core::ptr::from_ref(&mask), prune); self.z.remove_unmasked_branches(mask, prune) }
+    fn create_path(&mut self) -> bool { crate::trace::trace_point!(create_path, self.uid); self.z.create_path() }
+    fn prune_path(&mut self) -> usize { crate::trace::trace_point!(prune_path, self.uid); self.z.prune_path() }
+    fn prune_ascend(&mut self) -> usize { crate::trace::trace_point!(prune_ascend, self.uid); self.z.prune_ascend() }
 }
 
 impl<'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> WriteZipperPriv<V, A> for WriteZipperTracked<'a, 'path, V, A> {
@@ -644,68 +653,74 @@ crate::zipper::impl_zipper_debug!(
 /// A [write zipper](ZipperWriting) type for editing and adding paths and values in the trie, used when it
 /// is possible to statically guarantee non-interference between zippers
 pub struct WriteZipperUntracked<'a, 'k, V: Clone + Send + Sync, A: Allocator = GlobalAlloc> {
+    /// Identifies the zipper in traces, see [crate::trace]
+    uid: crate::trace::ZipperUid,
     z: WriteZipperCore<'a, 'k, V, A>,
 }
 
 impl<'a, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> Zipper for WriteZipperUntracked<'a, '_, V, A> {
-    fn path_exists(&self) -> bool { self.z.path_exists() }
-    fn is_val(&self) -> bool { self.z.is_val() }
-    fn child_count(&self) -> usize { self.z.child_count() }
-    fn child_mask(&self) -> ByteMask { self.z.child_mask() }
+    fn trace_uid(&self) -> u64 { self.uid.get() }
+    fn path_exists(&self) -> bool { crate::trace::trace_point!(path_exists, self.uid); self.z.path_exists() }
+    fn is_val(&self) -> bool { crate::trace::trace_point!(is_val, self.uid); self.z.is_val() }
+    fn child_count(&self) -> usize { crate::trace::trace_point!(child_count, self.uid); self.z.child_count() }
+    fn child_mask(&self) -> ByteMask { crate::trace::trace_point!(child_mask, self.uid); self.z.child_mask() }
 }
 
 impl<'a, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> ZipperValues<V> for WriteZipperUntracked<'a, '_, V, A> {
-    fn val(&self) -> Option<&V> { self.z.val() }
+    fn val(&self) -> Option<&V> { crate::trace::trace_point!(val, self.uid); self.z.val() }
 }
 
 impl<'a, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> ZipperValuesAt<V> for WriteZipperUntracked<'a, '_, V, A> {
-    fn val_at<K: AsRef<[u8]>>(&self, path: K) -> Option<&V> { self.z.val_at(path) }
+    fn val_at<K: AsRef<[u8]>>(&self, path: K) -> Option<&V> { crate::trace::trace_point!(val_at, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len()); self.z.val_at(path) }
 }
 
 impl<'trie, V: Clone + Send + Sync + Unpin, A: Allocator + 'trie> ZipperForking<V> for WriteZipperUntracked<'trie, '_, V, A> {
     type ReadZipperT<'a> = ReadZipperUntracked<'a, 'a, V, A> where Self: 'a;
     fn fork_read_zipper<'a>(&'a self) -> Option<Self::ReadZipperT<'a>> {
+        crate::trace::trace_point!(fork_read_zipper, self.uid);
         let rz_core = self.z.fork_read_zipper()?;
-        Some(Self::ReadZipperT::new_forked_with_inner_zipper(rz_core))
+        let child = Self::ReadZipperT::new_forked_with_inner_zipper(rz_core);
+        crate::trace::trace_point!(zipper_derive, child.trace_uid(), self.uid);
+        Some(child)
     }
 }
 
 impl<'a, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> ZipperSubtries<V, A> for WriteZipperUntracked<'a, '_, V, A> {
     fn native_subtries(&self) -> bool { true }
-    fn try_make_map(&self) -> Option<PathMap<V, A>> { Some(self.z.make_map()) }
-    fn trie_ref(&self) -> Option<TrieRef<'_, V, A>> { Some(self.z.get_trie_ref()) }
+    fn try_make_map(&self) -> Option<PathMap<V, A>> { crate::trace::trace_point!(try_make_map, self.uid); Some(self.z.make_map()) }
+    fn trie_ref(&self) -> Option<TrieRef<'_, V, A>> { crate::trace::trace_point!(trie_ref, self.uid); Some(self.z.get_trie_ref()) }
     fn alloc(&self) -> A { self.z.alloc.clone() }
 }
 
 impl<'a, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> ZipperInfallibleSubtries<V, A> for WriteZipperUntracked<'a, '_, V, A> {
-    fn make_map(&self) -> PathMap<V, A> { self.z.make_map() }
-    fn get_trie_ref(&self) -> TrieRef<'_, V, A> { self.z.get_trie_ref() }
-    fn get_focus(&self) -> OpaqueAbstractNodeRef<'_, V, A> { self.z.get_focus() }
-    fn get_focus_at<K: AsRef<[u8]>>(&self, path: K) -> OpaqueAbstractNodeRef<'_, V, A> { self.z.get_focus_at(path) }
-    fn try_borrow_focus(&self) -> Option<OpaqueTrieNodeRef<'_, V, A>> { self.z.try_borrow_focus() }
+    fn make_map(&self) -> PathMap<V, A> { crate::trace::trace_point!(make_map, self.uid); self.z.make_map() }
+    fn get_trie_ref(&self) -> TrieRef<'_, V, A> { crate::trace::trace_point!(get_trie_ref, self.uid); self.z.get_trie_ref() }
+    fn get_focus(&self) -> OpaqueAbstractNodeRef<'_, V, A> { crate::trace::trace_point!(get_focus, self.uid); self.z.get_focus() }
+    fn get_focus_at<K: AsRef<[u8]>>(&self, path: K) -> OpaqueAbstractNodeRef<'_, V, A> { crate::trace::trace_point!(get_focus_at, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len()); self.z.get_focus_at(path) }
+    fn try_borrow_focus(&self) -> Option<OpaqueTrieNodeRef<'_, V, A>> { crate::trace::trace_point!(try_borrow_focus, self.uid); self.z.try_borrow_focus() }
 }
 
 impl<'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> ZipperMoving for WriteZipperUntracked<'a, 'path, V, A> {
-    #[inline] fn depth(&self) -> usize { self.z.depth() }
-    fn at_root(&self) -> bool { self.z.at_root() }
-    #[inline] fn focus_byte(&self) -> Option<u8> { self.z.focus_byte() }
-    fn reset(&mut self) { self.z.reset() }
-    fn val_count(&self) -> usize { self.z.val_count() }
-    fn descend_to<K: AsRef<[u8]>>(&mut self, k: K) { self.z.descend_to(k) }
-    fn descend_to_byte(&mut self, k: u8) { self.z.descend_to_byte(k) }
-    fn descend_indexed_byte(&mut self, child_idx: usize) -> Option<u8> { self.z.descend_indexed_byte(child_idx) }
-    fn descend_first_byte(&mut self) -> Option<u8> { self.z.descend_first_byte() }
-    fn descend_until_observed<Obs: PathObserver>(&mut self, obs: &mut Obs) -> bool { self.z.descend_until_observed(obs) }
-    fn to_next_sibling_byte(&mut self) -> Option<u8> { self.z.to_next_sibling_byte() }
-    fn to_prev_sibling_byte(&mut self) -> Option<u8> { self.z.to_prev_sibling_byte() }
-    fn ascend(&mut self, steps: usize) -> usize { self.z.ascend(steps) }
-    fn ascend_byte(&mut self) -> bool { self.z.ascend_byte() }
-    fn ascend_until(&mut self) -> usize { self.z.ascend_until() }
-    fn ascend_until_branch(&mut self) -> usize { self.z.ascend_until_branch() }
+    #[inline] fn depth(&self) -> usize { crate::trace::trace_point!(depth, self.uid); self.z.depth() }
+    fn at_root(&self) -> bool { crate::trace::trace_point!(at_root, self.uid); self.z.at_root() }
+    #[inline] fn focus_byte(&self) -> Option<u8> { crate::trace::trace_point!(focus_byte, self.uid); self.z.focus_byte() }
+    fn reset(&mut self) { crate::trace::trace_point!(reset, self.uid); self.z.reset() }
+    fn val_count(&self) -> usize { crate::trace::trace_point!(val_count, self.uid); self.z.val_count() }
+    fn descend_to<K: AsRef<[u8]>>(&mut self, k: K) { crate::trace::trace_point!(descend_to, self.uid, AsRef::<[u8]>::as_ref(&k).as_ptr(), AsRef::<[u8]>::as_ref(&k).len()); self.z.descend_to(k) }
+    fn descend_to_byte(&mut self, k: u8) { crate::trace::trace_point!(descend_to_byte, self.uid, k); self.z.descend_to_byte(k) }
+    fn descend_indexed_byte(&mut self, child_idx: usize) -> Option<u8> { crate::trace::trace_point!(descend_indexed_byte, self.uid, child_idx); self.z.descend_indexed_byte(child_idx) }
+    fn descend_first_byte(&mut self) -> Option<u8> { crate::trace::trace_point!(descend_first_byte, self.uid); self.z.descend_first_byte() }
+    fn descend_until_observed<Obs: PathObserver>(&mut self, obs: &mut Obs) -> bool { crate::trace::trace_point!(descend_until_observed, self.uid); self.z.descend_until_observed(obs) }
+    fn to_next_sibling_byte(&mut self) -> Option<u8> { crate::trace::trace_point!(to_next_sibling_byte, self.uid); self.z.to_next_sibling_byte() }
+    fn to_prev_sibling_byte(&mut self) -> Option<u8> { crate::trace::trace_point!(to_prev_sibling_byte, self.uid); self.z.to_prev_sibling_byte() }
+    fn ascend(&mut self, steps: usize) -> usize { crate::trace::trace_point!(ascend, self.uid, steps); self.z.ascend(steps) }
+    fn ascend_byte(&mut self) -> bool { crate::trace::trace_point!(ascend_byte, self.uid); self.z.ascend_byte() }
+    fn ascend_until(&mut self) -> usize { crate::trace::trace_point!(ascend_until, self.uid); self.z.ascend_until() }
+    fn ascend_until_branch(&mut self) -> usize { crate::trace::trace_point!(ascend_until_branch, self.uid); self.z.ascend_until_branch() }
 }
 
 impl<'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> ZipperPath for WriteZipperUntracked<'a, 'path, V, A> {
-    fn path(&self) -> &[u8] { self.z.path() }
+    fn path(&self) -> &[u8] { crate::trace::trace_point!(path, self.uid); self.z.path() }
 }
 
 impl<'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> ZipperPathBuffer for WriteZipperUntracked<'a, 'path, V, A> {
@@ -715,8 +730,8 @@ impl<'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> ZipperPathBuf
 }
 
 impl<'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> ZipperAbsolutePath for WriteZipperUntracked<'a, 'path, V, A> {
-    fn origin_path(&self) -> &[u8] { self.z.origin_path() }
-    fn root_prefix_path(&self) -> &[u8] { self.z.root_prefix_path() }
+    fn origin_path(&self) -> &[u8] { crate::trace::trace_point!(origin_path, self.uid); self.z.origin_path() }
+    fn root_prefix_path(&self) -> &[u8] { crate::trace::trace_point!(root_prefix_path, self.uid); self.z.root_prefix_path() }
 }
 
 impl <'a, V: Clone + Send + Sync + Unpin, A: Allocator> WriteZipperUntracked<'a, 'static, V, A> {
@@ -732,7 +747,7 @@ impl <'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> WriteZipperU
     /// Creates a new zipper, with a path relative to a node
     pub(crate) fn new_with_node_and_path_in(root_node: &'a mut TrieNodeODRc<V, A>, root_val: Option<&'a mut Option<V>>, path: &'path [u8], root_prefix_len: usize, root_key_start: usize, alloc: A) -> Self {
         let core = WriteZipperCore::<'a, 'path, V, A>::new_with_node_and_path_in(root_node, root_val, path, root_prefix_len, root_key_start, alloc);
-        Self { z: core }
+        Self { uid: crate::trace::new_uid!(WriteZipperUntracked), z: core }
     }
     /// Creates a new zipper, with a path relative to a node, assuming the path is fully-contained within
     /// the node
@@ -741,12 +756,14 @@ impl <'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> WriteZipperU
     /// guarantee the path is within the supplied node.
     pub(crate) fn new_with_node_and_path_internal_in(root_node: &'a mut TrieNodeODRc<V, A>, root_val: Option<&'a mut Option<V>>, path: &'path [u8], root_key_start: usize, alloc: A) -> Self {
         let core = WriteZipperCore::<'a, 'path, V, A>::new_with_node_and_path_internal_in(root_node, root_val, path, root_key_start, alloc);
-        Self { z: core }
+        Self { uid: crate::trace::new_uid!(WriteZipperUntracked), z: core }
     }
     /// Consumes the `WriteZipperUntracked`, and returns a [ReadZipperUntracked] in its place
     ///
     /// The returned read zipper will have the same root and focus as the the consumed write zipper.
     pub fn into_read_zipper(mut self) -> ReadZipperUntracked<'a, 'static, V, A> {
+        #[allow(unused_variables)] // only read by trace points
+        let parent_uid = self.uid.snapshot();
         let root_node = self.z.focus_stack.take_root().unwrap();
         let root_path = &self.z.key.prefix_buf[..self.z.key.origin_path.len()];
         let descended_path = &self.z.key.prefix_buf[self.z.key.origin_path.len()..];
@@ -755,6 +772,7 @@ impl <'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> WriteZipperU
 
         let mut new_zipper = ReadZipperUntracked::new_with_node_and_cloned_path_in(root_node, root_path, root_path.len(), self.z.key.root_key_start, root_val, self.z.alloc.clone());
         new_zipper.descend_to(descended_path);
+        crate::trace::trace_point!(zipper_derive, new_zipper.trace_uid(), parent_uid);
         new_zipper
     }
     /// Internal method to access `WriteZipperCore` inside `WriteZipperUntracked`
@@ -772,43 +790,43 @@ impl <'a, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> WriteZipperUntracke
     /// See [WriteZipperCore::new_with_node_and_buffer_internal_in]
     pub(crate) fn new_with_node_and_buffer_internal_in(root_node: &'a mut TrieNodeODRc<V, A>, root_val: Option<&'a mut Option<V>>, path: &[u8], root_key_start: usize, alloc: A, buffer: WriteZipperBuffer<V, A>) -> Self {
         let core = WriteZipperCore::<'a, 'static, V, A>::new_with_node_and_buffer_internal_in(root_node, root_val, path, root_key_start, alloc, buffer);
-        Self { z: core }
+        Self { uid: crate::trace::new_uid!(WriteZipperUntracked), z: core }
     }
 }
 
 impl<'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> ZipperWriting<V, A> for WriteZipperUntracked<'a, 'path, V, A> {
     type ZipperHead<'z> = ZipperHead<'z, 'a, V, A> where Self: 'z;
-    fn get_val_mut(&mut self) -> Option<&mut V> { self.z.get_val_mut() }
-    fn get_val_or_set_mut(&mut self, default: V) -> &mut V { self.z.get_val_or_set_mut(default) }
-    fn get_val_or_set_mut_with<F>(&mut self, func: F) -> &mut V where F: FnOnce() -> V { self.z.get_val_or_set_mut_with(func) }
-    fn set_val(&mut self, val: V) -> Option<V> { self.z.set_val(val) }
-    fn set_val_at<K: AsRef<[u8]>>(&mut self, path: K, val: V) -> Option<V> { self.z.set_val_at(path, val) }
-    fn remove_val(&mut self, prune: bool) -> Option<V> { self.z.remove_val(prune) }
-    fn zipper_head<'z>(&'z mut self) -> Self::ZipperHead<'z> { self.z.zipper_head() }
-    fn graft<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) { self.z.graft(read_zipper) }
-    fn graft_src_at<Z: ZipperInfallibleSubtries<V, A>, K: AsRef<[u8]>>(&mut self, src: &Z, path: K) { self.z.graft_src_at(src, path) }
-    fn graft_map(&mut self, map: PathMap<V, A>) { self.z.graft_map(map) }
-    fn graft_masked_branches<Z: ZipperInfallibleSubtries<V, A>>(&mut self, src: &Z, child_mask: ByteMask, remove_unset: bool) { self.z.graft_masked_branches(src, child_mask, remove_unset) }
-    fn graft_child_maps<I: IntoIterator<Item=PathMap<V, A>>>(&mut self, child_mask: ByteMask, maps: I, remove_unset: bool) { self.z.graft_child_maps(child_mask, maps, remove_unset) }
-    fn join_into<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) -> AlgebraicStatus where V: Lattice { self.z.join_into(read_zipper) }
-    fn join_map_into(&mut self, map: PathMap<V, A>) -> AlgebraicStatus where V: Lattice { self.z.join_map_into(map) }
-    fn join_into_take<Z: ZipperInfallibleSubtries<V, A> + ZipperWriting<V, A>>(&mut self, src_zipper: &mut Z, prune: bool) -> AlgebraicStatus where V: Lattice { self.z.join_into_take(src_zipper, prune) }
-    fn join_k_path_into(&mut self, byte_cnt: usize, prune: bool) -> bool where V: Lattice { self.z.join_k_path_into(byte_cnt, prune) }
-    fn meet_k_path_into(&mut self, byte_cnt: usize, prune: bool) -> bool where V: Lattice { self.z.meet_k_path_into(byte_cnt, prune) }
-    fn insert_prefix<K: AsRef<[u8]>>(&mut self, prefix: K) -> bool { self.z.insert_prefix(prefix) }
-    fn remove_prefix(&mut self, n: usize) -> bool { self.z.remove_prefix(n) }
-    fn meet_into<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z, prune: bool) -> AlgebraicStatus where V: Lattice { self.z.meet_into(read_zipper, prune) }
-    fn meet_2<ZA: ZipperInfallibleSubtries<V, A>, ZB: ZipperInfallibleSubtries<V, A>>(&mut self, rz_a: &ZA, rz_b: &ZB) -> AlgebraicStatus where V: Lattice { self.z.meet_2(rz_a, rz_b) }
-    fn subtract_into<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z, prune: bool) -> AlgebraicStatus where V: DistributiveLattice { self.z.subtract_into(read_zipper, prune) }
-    fn restrict<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) -> AlgebraicStatus { self.z.restrict(read_zipper) }
-    fn restricting<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) -> bool { self.z.restricting(read_zipper) }
-    fn take_map(&mut self, prune: bool) -> Option<PathMap<V, A>> { self.z.take_map(prune) }
-    fn remove_branches(&mut self, prune: bool) -> bool { self.z.remove_branches(prune) }
-    fn remove_subtrie(&mut self, prune: bool) -> bool { self.z.remove_subtrie(prune) }
-    fn remove_unmasked_branches(&mut self, mask: ByteMask, prune: bool) { self.z.remove_unmasked_branches(mask, prune) }
-    fn create_path(&mut self) -> bool { self.z.create_path() }
-    fn prune_path(&mut self) -> usize { self.z.prune_path() }
-    fn prune_ascend(&mut self) -> usize { self.z.prune_ascend() }
+    fn get_val_mut(&mut self) -> Option<&mut V> { crate::trace::trace_point!(get_val_mut, self.uid); self.z.get_val_mut() }
+    fn get_val_or_set_mut(&mut self, default: V) -> &mut V { crate::trace::trace_point!(get_val_or_set_mut, self.uid, core::ptr::from_ref(&default)); self.z.get_val_or_set_mut(default) }
+    fn get_val_or_set_mut_with<F>(&mut self, func: F) -> &mut V where F: FnOnce() -> V { crate::trace::trace_point!(get_val_or_set_mut_with, self.uid); self.z.get_val_or_set_mut_with(func) }
+    fn set_val(&mut self, val: V) -> Option<V> { crate::trace::trace_point!(set_val, self.uid, core::ptr::from_ref(&val)); self.z.set_val(val) }
+    fn set_val_at<K: AsRef<[u8]>>(&mut self, path: K, val: V) -> Option<V> { crate::trace::trace_point!(set_val_at, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len(), core::ptr::from_ref(&val)); self.z.set_val_at(path, val) }
+    fn remove_val(&mut self, prune: bool) -> Option<V> { crate::trace::trace_point!(remove_val, self.uid, prune); self.z.remove_val(prune) }
+    fn zipper_head<'z>(&'z mut self) -> Self::ZipperHead<'z> { crate::trace::trace_point!(zipper_head, self.uid); self.z.zipper_head() }
+    fn graft<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) { crate::trace::trace_point!(graft, self.uid, crate::zipper::Zipper::trace_uid(&*read_zipper)); self.z.graft(read_zipper) }
+    fn graft_src_at<Z: ZipperInfallibleSubtries<V, A>, K: AsRef<[u8]>>(&mut self, src: &Z, path: K) { crate::trace::trace_point!(graft_src_at, self.uid, crate::zipper::Zipper::trace_uid(&*src), AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len()); self.z.graft_src_at(src, path) }
+    fn graft_map(&mut self, map: PathMap<V, A>) { crate::trace::trace_point!(graft_map, self.uid); self.z.graft_map(map) }
+    fn graft_masked_branches<Z: ZipperInfallibleSubtries<V, A>>(&mut self, src: &Z, child_mask: ByteMask, remove_unset: bool) { crate::trace::trace_point!(graft_masked_branches, self.uid, crate::zipper::Zipper::trace_uid(&*src), core::ptr::from_ref(&child_mask), remove_unset); self.z.graft_masked_branches(src, child_mask, remove_unset) }
+    fn graft_child_maps<I: IntoIterator<Item=PathMap<V, A>>>(&mut self, child_mask: ByteMask, maps: I, remove_unset: bool) { crate::trace::trace_point!(graft_child_maps, self.uid, core::ptr::from_ref(&child_mask), remove_unset); self.z.graft_child_maps(child_mask, maps, remove_unset) }
+    fn join_into<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) -> AlgebraicStatus where V: Lattice { crate::trace::trace_point!(join_into, self.uid, crate::zipper::Zipper::trace_uid(&*read_zipper)); self.z.join_into(read_zipper) }
+    fn join_map_into(&mut self, map: PathMap<V, A>) -> AlgebraicStatus where V: Lattice { crate::trace::trace_point!(join_map_into, self.uid); self.z.join_map_into(map) }
+    fn join_into_take<Z: ZipperInfallibleSubtries<V, A> + ZipperWriting<V, A>>(&mut self, src_zipper: &mut Z, prune: bool) -> AlgebraicStatus where V: Lattice { crate::trace::trace_point!(join_into_take, self.uid, crate::zipper::Zipper::trace_uid(&*src_zipper), prune); self.z.join_into_take(src_zipper, prune) }
+    fn join_k_path_into(&mut self, byte_cnt: usize, prune: bool) -> bool where V: Lattice { crate::trace::trace_point!(join_k_path_into, self.uid, byte_cnt, prune); self.z.join_k_path_into(byte_cnt, prune) }
+    fn meet_k_path_into(&mut self, byte_cnt: usize, prune: bool) -> bool where V: Lattice { crate::trace::trace_point!(meet_k_path_into, self.uid, byte_cnt, prune); self.z.meet_k_path_into(byte_cnt, prune) }
+    fn insert_prefix<K: AsRef<[u8]>>(&mut self, prefix: K) -> bool { crate::trace::trace_point!(insert_prefix, self.uid, AsRef::<[u8]>::as_ref(&prefix).as_ptr(), AsRef::<[u8]>::as_ref(&prefix).len()); self.z.insert_prefix(prefix) }
+    fn remove_prefix(&mut self, n: usize) -> bool { crate::trace::trace_point!(remove_prefix, self.uid, n); self.z.remove_prefix(n) }
+    fn meet_into<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z, prune: bool) -> AlgebraicStatus where V: Lattice { crate::trace::trace_point!(meet_into, self.uid, crate::zipper::Zipper::trace_uid(&*read_zipper), prune); self.z.meet_into(read_zipper, prune) }
+    fn meet_2<ZA: ZipperInfallibleSubtries<V, A>, ZB: ZipperInfallibleSubtries<V, A>>(&mut self, rz_a: &ZA, rz_b: &ZB) -> AlgebraicStatus where V: Lattice { crate::trace::trace_point!(meet_2, self.uid, crate::zipper::Zipper::trace_uid(&*rz_a), crate::zipper::Zipper::trace_uid(&*rz_b)); self.z.meet_2(rz_a, rz_b) }
+    fn subtract_into<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z, prune: bool) -> AlgebraicStatus where V: DistributiveLattice { crate::trace::trace_point!(subtract_into, self.uid, crate::zipper::Zipper::trace_uid(&*read_zipper), prune); self.z.subtract_into(read_zipper, prune) }
+    fn restrict<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) -> AlgebraicStatus { crate::trace::trace_point!(restrict, self.uid, crate::zipper::Zipper::trace_uid(&*read_zipper)); self.z.restrict(read_zipper) }
+    fn restricting<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) -> bool { crate::trace::trace_point!(restricting, self.uid, crate::zipper::Zipper::trace_uid(&*read_zipper)); self.z.restricting(read_zipper) }
+    fn take_map(&mut self, prune: bool) -> Option<PathMap<V, A>> { crate::trace::trace_point!(take_map, self.uid, prune); self.z.take_map(prune) }
+    fn remove_branches(&mut self, prune: bool) -> bool { crate::trace::trace_point!(remove_branches, self.uid, prune); self.z.remove_branches(prune) }
+    fn remove_subtrie(&mut self, prune: bool) -> bool { crate::trace::trace_point!(remove_subtrie, self.uid, prune); self.z.remove_subtrie(prune) }
+    fn remove_unmasked_branches(&mut self, mask: ByteMask, prune: bool) { crate::trace::trace_point!(remove_unmasked_branches, self.uid, core::ptr::from_ref(&mask), prune); self.z.remove_unmasked_branches(mask, prune) }
+    fn create_path(&mut self) -> bool { crate::trace::trace_point!(create_path, self.uid); self.z.create_path() }
+    fn prune_path(&mut self) -> usize { crate::trace::trace_point!(prune_path, self.uid); self.z.prune_path() }
+    fn prune_ascend(&mut self) -> usize { crate::trace::trace_point!(prune_ascend, self.uid); self.z.prune_ascend() }
 }
 
 impl<'a, 'path, V: Clone + Send + Sync + Unpin, A: Allocator + 'a> WriteZipperPriv<V, A> for WriteZipperUntracked<'a, 'path, V, A> {
@@ -832,6 +850,8 @@ crate::zipper::impl_zipper_debug!(
 /// zipper root each time, which could be a perf gain.  On the other hand, this object has higher overhead
 /// than the ordinary borrowed `WriteZipper`, both at creation time as well as during use.
 pub struct WriteZipperOwned<V: Clone + Send + Sync + 'static, A: Allocator + 'static = GlobalAlloc> {
+    /// Identifies the zipper in traces, see [crate::trace]
+    uid: crate::trace::ZipperUid,
     map: MaybeDangling<Box<PathMap<V, A>>>,
     z: WriteZipperCore<'static, 'static, V, A>,
 }
@@ -839,32 +859,35 @@ pub struct WriteZipperOwned<V: Clone + Send + Sync + 'static, A: Allocator + 'st
 impl<V: 'static + Clone + Send + Sync + Unpin, A: Allocator> Clone for WriteZipperOwned<V, A> {
     fn clone(&self) -> Self {
         let new_map = (**self.map).clone();
-        Self::new_with_map(new_map, self.root_prefix_path())
+        Self::new_with_map_and_uid(new_map, self.root_prefix_path(), self.uid.clone())
     }
 }
 
-impl<V: Clone + Send + Sync + Unpin, A: Allocator> Zipper for WriteZipperOwned<V, A> { zipper_impl_lens!(Zipper self => self.z); }
-impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperValues<V> for WriteZipperOwned<V, A> { zipper_impl_lens!(ZipperValues self => self.z); }
-impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperValuesAt<V> for WriteZipperOwned<V, A> { zipper_impl_lens!(ZipperValuesAt self => self.z); }
-impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperInfallibleSubtries<V, A> for WriteZipperOwned<V, A> { zipper_impl_lens!(ZipperInfallibleSubtries self => self.z); }
-impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperMoving for WriteZipperOwned<V, A> { zipper_impl_lens!(ZipperMoving self => self.z); }
-impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperPath for WriteZipperOwned<V, A> { zipper_impl_lens!(ZipperPath self => self.z); }
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> Zipper for WriteZipperOwned<V, A> { zipper_impl_lens!(Zipper self => self.z, uid = self.uid); }
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperValues<V> for WriteZipperOwned<V, A> { zipper_impl_lens!(ZipperValues self => self.z, uid = self.uid); }
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperValuesAt<V> for WriteZipperOwned<V, A> { zipper_impl_lens!(ZipperValuesAt self => self.z, uid = self.uid); }
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperInfallibleSubtries<V, A> for WriteZipperOwned<V, A> { zipper_impl_lens!(ZipperInfallibleSubtries self => self.z, uid = self.uid); }
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperMoving for WriteZipperOwned<V, A> { zipper_impl_lens!(ZipperMoving self => self.z, uid = self.uid); }
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperPath for WriteZipperOwned<V, A> { zipper_impl_lens!(ZipperPath self => self.z, uid = self.uid); }
 impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperPathBuffer for WriteZipperOwned<V, A> { zipper_impl_lens!(ZipperPathBuffer self => self.z); }
-impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperAbsolutePath for WriteZipperOwned<V, A> { zipper_impl_lens!(ZipperAbsolutePath self => self.z); }
+impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperAbsolutePath for WriteZipperOwned<V, A> { zipper_impl_lens!(ZipperAbsolutePath self => self.z, uid = self.uid); }
 
 
 impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperForking<V> for WriteZipperOwned<V, A> {
     type ReadZipperT<'a> = ReadZipperUntracked<'a, 'a, V, A> where Self: 'a;
     fn fork_read_zipper<'a>(&'a self) -> Option<Self::ReadZipperT<'a>> {
+        crate::trace::trace_point!(fork_read_zipper, self.uid);
         let rz_core = self.z.fork_read_zipper()?;
-        Some(Self::ReadZipperT::new_forked_with_inner_zipper(rz_core))
+        let child = Self::ReadZipperT::new_forked_with_inner_zipper(rz_core);
+        crate::trace::trace_point!(zipper_derive, child.trace_uid(), self.uid);
+        Some(child)
     }
 }
 
 impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperSubtries<V, A> for WriteZipperOwned<V, A> {
     fn native_subtries(&self) -> bool { true } // Why not self.z.native_subtries ?
-    fn try_make_map(&self) -> Option<PathMap<V, A>> { Some(self.z.make_map()) }
-    fn trie_ref(&self) -> Option<TrieRef<'_, V, A>> { Some(self.z.get_trie_ref()) }
+    fn try_make_map(&self) -> Option<PathMap<V, A>> { crate::trace::trace_point!(try_make_map, self.uid); Some(self.z.make_map()) }
+    fn trie_ref(&self) -> Option<TrieRef<'_, V, A>> { crate::trace::trace_point!(trie_ref, self.uid); Some(self.z.get_trie_ref()) }
     fn alloc(&self) -> A { self.z.alloc.clone() }
 }
 
@@ -882,6 +905,10 @@ impl <V: Clone + Send + Sync + Unpin, A: Allocator> WriteZipperOwned<V, A> {
     }
     /// Creates a new `WriteZipperOwned`, consuming a `map`
     pub(crate) fn new_with_map<K: AsRef<[u8]>>(map: PathMap<V, A>, path: K) -> Self {
+        Self::new_with_map_and_uid(map, path, crate::trace::new_uid!(WriteZipperOwned))
+    }
+    #[inline(always)]
+    fn new_with_map_and_uid<K: AsRef<[u8]>>(map: PathMap<V, A>, path: K, uid: crate::trace::ZipperUid) -> Self {
         let path = path.as_ref();
         map.ensure_root();
         let alloc = map.alloc.clone();
@@ -892,7 +919,7 @@ impl <V: Clone + Send + Sync + Unpin, A: Allocator> WriteZipperOwned<V, A> {
             false => None
         };
         let core = WriteZipperCore::new_with_node_and_cloned_path_in(root_ref, root_val, &*path, path.len(), 0, alloc);
-        Self { map, z: core }
+        Self { uid, map, z: core }
     }
     /// Consumes the zipper and returns a map contained within the zipper
     pub fn into_map(self) -> PathMap<V, A> {
@@ -908,12 +935,15 @@ impl <V: Clone + Send + Sync + Unpin, A: Allocator> WriteZipperOwned<V, A> {
     ///
     /// The returned read zipper will have the same root and focus as the the consumed write zipper.
     pub fn into_read_zipper(mut self) -> ReadZipperOwned<V, A> {
+        #[allow(unused_variables)] // only read by trace points
+        let parent_uid = self.uid.snapshot();
         let descended_path = &self.z.key.prefix_buf[self.z.key.origin_path.len()..].to_vec();
         let root_prefix_len = self.root_prefix_path().len();
         let path = self.take_root_prefix_path();
         let map = self.into_map();
         let mut new_zipper = ReadZipperOwned::new_with_map(map, &path[..root_prefix_len]);
         new_zipper.descend_to(descended_path);
+        crate::trace::trace_point!(zipper_derive, new_zipper.trace_uid(), parent_uid);
         new_zipper
     }
     /// Internal method to access `WriteZipperCore` inside `WriteZipperOwned`
@@ -924,37 +954,37 @@ impl <V: Clone + Send + Sync + Unpin, A: Allocator> WriteZipperOwned<V, A> {
 
 impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperWriting<V, A> for WriteZipperOwned<V, A> {
     type ZipperHead<'z> = ZipperHead<'z, 'static, V, A> where Self: 'z;
-    fn get_val_mut(&mut self) -> Option<&mut V> { self.z.get_val_mut() }
-    fn get_val_or_set_mut(&mut self, default: V) -> &mut V { self.z.get_val_or_set_mut(default) }
-    fn get_val_or_set_mut_with<F>(&mut self, func: F) -> &mut V where F: FnOnce() -> V { self.z.get_val_or_set_mut_with(func) }
-    fn set_val(&mut self, val: V) -> Option<V> { self.z.set_val(val) }
-    fn set_val_at<K: AsRef<[u8]>>(&mut self, path: K, val: V) -> Option<V> { self.z.set_val_at(path, val) }
-    fn remove_val(&mut self, prune: bool) -> Option<V> { self.z.remove_val(prune) }
-    fn zipper_head<'z>(&'z mut self) -> Self::ZipperHead<'z> { self.z.zipper_head() }
-    fn graft<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) { self.z.graft(read_zipper) }
-    fn graft_src_at<Z: ZipperInfallibleSubtries<V, A>, K: AsRef<[u8]>>(&mut self, src: &Z, path: K) { self.z.graft_src_at(src, path) }
-    fn graft_map(&mut self, map: PathMap<V, A>) { self.z.graft_map(map) }
-    fn graft_masked_branches<Z: ZipperInfallibleSubtries<V, A>>(&mut self, src: &Z, child_mask: ByteMask, remove_unset: bool) { self.z.graft_masked_branches(src, child_mask, remove_unset) }
-    fn graft_child_maps<I: IntoIterator<Item=PathMap<V, A>>>(&mut self, child_mask: ByteMask, maps: I, remove_unset: bool) { self.z.graft_child_maps(child_mask, maps, remove_unset) }
-    fn join_into<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) -> AlgebraicStatus where V: Lattice { self.z.join_into(read_zipper) }
-    fn join_map_into(&mut self, map: PathMap<V, A>) -> AlgebraicStatus where V: Lattice { self.z.join_map_into(map) }
-    fn join_into_take<Z: ZipperInfallibleSubtries<V, A> + ZipperWriting<V, A>>(&mut self, src_zipper: &mut Z, prune: bool) -> AlgebraicStatus where V: Lattice { self.z.join_into_take(src_zipper, prune) }
-    fn join_k_path_into(&mut self, byte_cnt: usize, prune: bool) -> bool where V: Lattice { self.z.join_k_path_into(byte_cnt, prune) }
-    fn meet_k_path_into(&mut self, byte_cnt: usize, prune: bool) -> bool where V: Lattice { self.z.meet_k_path_into(byte_cnt, prune) }
-    fn insert_prefix<K: AsRef<[u8]>>(&mut self, prefix: K) -> bool { self.z.insert_prefix(prefix) }
-    fn remove_prefix(&mut self, n: usize) -> bool { self.z.remove_prefix(n) }
-    fn meet_into<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z, prune: bool) -> AlgebraicStatus where V: Lattice { self.z.meet_into(read_zipper, prune) }
-    fn meet_2<ZA: ZipperInfallibleSubtries<V, A>, ZB: ZipperInfallibleSubtries<V, A>>(&mut self, rz_a: &ZA, rz_b: &ZB) -> AlgebraicStatus where V: Lattice { self.z.meet_2(rz_a, rz_b) }
-    fn subtract_into<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z, prune: bool) -> AlgebraicStatus where V: DistributiveLattice { self.z.subtract_into(read_zipper, prune) }
-    fn restrict<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) -> AlgebraicStatus { self.z.restrict(read_zipper) }
-    fn restricting<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) -> bool { self.z.restricting(read_zipper) }
-    fn take_map(&mut self, prune: bool) -> Option<PathMap<V, A>> { self.z.take_map(prune) }
-    fn remove_branches(&mut self, prune: bool) -> bool { self.z.remove_branches(prune) }
-    fn remove_subtrie(&mut self, prune: bool) -> bool { self.z.remove_subtrie(prune) }
-    fn remove_unmasked_branches(&mut self, mask: ByteMask, prune: bool) { self.z.remove_unmasked_branches(mask, prune) }
-    fn create_path(&mut self) -> bool { self.z.create_path() }
-    fn prune_path(&mut self) -> usize { self.z.prune_path() }
-    fn prune_ascend(&mut self) -> usize { self.z.prune_ascend() }
+    fn get_val_mut(&mut self) -> Option<&mut V> { crate::trace::trace_point!(get_val_mut, self.uid); self.z.get_val_mut() }
+    fn get_val_or_set_mut(&mut self, default: V) -> &mut V { crate::trace::trace_point!(get_val_or_set_mut, self.uid, core::ptr::from_ref(&default)); self.z.get_val_or_set_mut(default) }
+    fn get_val_or_set_mut_with<F>(&mut self, func: F) -> &mut V where F: FnOnce() -> V { crate::trace::trace_point!(get_val_or_set_mut_with, self.uid); self.z.get_val_or_set_mut_with(func) }
+    fn set_val(&mut self, val: V) -> Option<V> { crate::trace::trace_point!(set_val, self.uid, core::ptr::from_ref(&val)); self.z.set_val(val) }
+    fn set_val_at<K: AsRef<[u8]>>(&mut self, path: K, val: V) -> Option<V> { crate::trace::trace_point!(set_val_at, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len(), core::ptr::from_ref(&val)); self.z.set_val_at(path, val) }
+    fn remove_val(&mut self, prune: bool) -> Option<V> { crate::trace::trace_point!(remove_val, self.uid, prune); self.z.remove_val(prune) }
+    fn zipper_head<'z>(&'z mut self) -> Self::ZipperHead<'z> { crate::trace::trace_point!(zipper_head, self.uid); self.z.zipper_head() }
+    fn graft<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) { crate::trace::trace_point!(graft, self.uid, crate::zipper::Zipper::trace_uid(&*read_zipper)); self.z.graft(read_zipper) }
+    fn graft_src_at<Z: ZipperInfallibleSubtries<V, A>, K: AsRef<[u8]>>(&mut self, src: &Z, path: K) { crate::trace::trace_point!(graft_src_at, self.uid, crate::zipper::Zipper::trace_uid(&*src), AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len()); self.z.graft_src_at(src, path) }
+    fn graft_map(&mut self, map: PathMap<V, A>) { crate::trace::trace_point!(graft_map, self.uid); self.z.graft_map(map) }
+    fn graft_masked_branches<Z: ZipperInfallibleSubtries<V, A>>(&mut self, src: &Z, child_mask: ByteMask, remove_unset: bool) { crate::trace::trace_point!(graft_masked_branches, self.uid, crate::zipper::Zipper::trace_uid(&*src), core::ptr::from_ref(&child_mask), remove_unset); self.z.graft_masked_branches(src, child_mask, remove_unset) }
+    fn graft_child_maps<I: IntoIterator<Item=PathMap<V, A>>>(&mut self, child_mask: ByteMask, maps: I, remove_unset: bool) { crate::trace::trace_point!(graft_child_maps, self.uid, core::ptr::from_ref(&child_mask), remove_unset); self.z.graft_child_maps(child_mask, maps, remove_unset) }
+    fn join_into<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) -> AlgebraicStatus where V: Lattice { crate::trace::trace_point!(join_into, self.uid, crate::zipper::Zipper::trace_uid(&*read_zipper)); self.z.join_into(read_zipper) }
+    fn join_map_into(&mut self, map: PathMap<V, A>) -> AlgebraicStatus where V: Lattice { crate::trace::trace_point!(join_map_into, self.uid); self.z.join_map_into(map) }
+    fn join_into_take<Z: ZipperInfallibleSubtries<V, A> + ZipperWriting<V, A>>(&mut self, src_zipper: &mut Z, prune: bool) -> AlgebraicStatus where V: Lattice { crate::trace::trace_point!(join_into_take, self.uid, crate::zipper::Zipper::trace_uid(&*src_zipper), prune); self.z.join_into_take(src_zipper, prune) }
+    fn join_k_path_into(&mut self, byte_cnt: usize, prune: bool) -> bool where V: Lattice { crate::trace::trace_point!(join_k_path_into, self.uid, byte_cnt, prune); self.z.join_k_path_into(byte_cnt, prune) }
+    fn meet_k_path_into(&mut self, byte_cnt: usize, prune: bool) -> bool where V: Lattice { crate::trace::trace_point!(meet_k_path_into, self.uid, byte_cnt, prune); self.z.meet_k_path_into(byte_cnt, prune) }
+    fn insert_prefix<K: AsRef<[u8]>>(&mut self, prefix: K) -> bool { crate::trace::trace_point!(insert_prefix, self.uid, AsRef::<[u8]>::as_ref(&prefix).as_ptr(), AsRef::<[u8]>::as_ref(&prefix).len()); self.z.insert_prefix(prefix) }
+    fn remove_prefix(&mut self, n: usize) -> bool { crate::trace::trace_point!(remove_prefix, self.uid, n); self.z.remove_prefix(n) }
+    fn meet_into<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z, prune: bool) -> AlgebraicStatus where V: Lattice { crate::trace::trace_point!(meet_into, self.uid, crate::zipper::Zipper::trace_uid(&*read_zipper), prune); self.z.meet_into(read_zipper, prune) }
+    fn meet_2<ZA: ZipperInfallibleSubtries<V, A>, ZB: ZipperInfallibleSubtries<V, A>>(&mut self, rz_a: &ZA, rz_b: &ZB) -> AlgebraicStatus where V: Lattice { crate::trace::trace_point!(meet_2, self.uid, crate::zipper::Zipper::trace_uid(&*rz_a), crate::zipper::Zipper::trace_uid(&*rz_b)); self.z.meet_2(rz_a, rz_b) }
+    fn subtract_into<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z, prune: bool) -> AlgebraicStatus where V: DistributiveLattice { crate::trace::trace_point!(subtract_into, self.uid, crate::zipper::Zipper::trace_uid(&*read_zipper), prune); self.z.subtract_into(read_zipper, prune) }
+    fn restrict<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) -> AlgebraicStatus { crate::trace::trace_point!(restrict, self.uid, crate::zipper::Zipper::trace_uid(&*read_zipper)); self.z.restrict(read_zipper) }
+    fn restricting<Z: ZipperInfallibleSubtries<V, A>>(&mut self, read_zipper: &Z) -> bool { crate::trace::trace_point!(restricting, self.uid, crate::zipper::Zipper::trace_uid(&*read_zipper)); self.z.restricting(read_zipper) }
+    fn take_map(&mut self, prune: bool) -> Option<PathMap<V, A>> { crate::trace::trace_point!(take_map, self.uid, prune); self.z.take_map(prune) }
+    fn remove_branches(&mut self, prune: bool) -> bool { crate::trace::trace_point!(remove_branches, self.uid, prune); self.z.remove_branches(prune) }
+    fn remove_subtrie(&mut self, prune: bool) -> bool { crate::trace::trace_point!(remove_subtrie, self.uid, prune); self.z.remove_subtrie(prune) }
+    fn remove_unmasked_branches(&mut self, mask: ByteMask, prune: bool) { crate::trace::trace_point!(remove_unmasked_branches, self.uid, core::ptr::from_ref(&mask), prune); self.z.remove_unmasked_branches(mask, prune) }
+    fn create_path(&mut self) -> bool { crate::trace::trace_point!(create_path, self.uid); self.z.create_path() }
+    fn prune_path(&mut self) -> usize { crate::trace::trace_point!(prune_path, self.uid); self.z.prune_path() }
+    fn prune_ascend(&mut self) -> usize { crate::trace::trace_point!(prune_ascend, self.uid); self.z.prune_ascend() }
 }
 
 impl<V: Clone + Send + Sync + Unpin, A: Allocator> WriteZipperPriv<V, A> for WriteZipperOwned<V, A> {

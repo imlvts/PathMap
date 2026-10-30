@@ -26,6 +26,8 @@ pub struct OverlayZipper<AV, BV, OutV, AZipper, BZipper, Mapping>
     where
         Mapping: for<'a> Fn(Option<&'a AV>, Option<&'a BV>) -> Option<&'a OutV>,
 {
+    /// Identifies the zipper in traces, see [crate::trace]
+    uid: crate::trace::ZipperUid,
     a: AZipper,
     b: BZipper,
     mapping: Mapping,
@@ -60,6 +62,7 @@ impl<AV, BV, OutV, AZipper, BZipper, Mapping>
         a.reset();
         b.reset();
         Self {
+            uid: crate::trace::new_uid!(OverlayZipper),
             a, b,
             mapping,
             _marker: core::marker::PhantomData,
@@ -100,6 +103,7 @@ impl<AV, BV, OutV, AZipper, BZipper, Mapping> ZipperValues<OutV>
         Mapping: for<'a> Fn(Option<&'a AV>, Option<&'a BV>) -> Option<&'a OutV>,
 {
     fn val(&self) -> Option<&OutV> {
+        crate::trace::trace_point!(val, self.uid);
         (self.mapping)(self.a.val(), self.b.val())
     }
 }
@@ -112,6 +116,7 @@ impl<AV, BV, OutV, AZipper, BZipper, Mapping> ZipperValuesAt<OutV>
         Mapping: for<'a> Fn(Option<&'a AV>, Option<&'a BV>) -> Option<&'a OutV>,
 {
     fn val_at<K: AsRef<[u8]>>(&self, path: K) -> Option<&OutV> {
+        crate::trace::trace_point!(val_at, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         (self.mapping)(self.a.val_at(&path), self.b.val_at(&path))
     }
 }
@@ -123,18 +128,23 @@ impl<AV, BV, OutV, AZipper, BZipper, Mapping> Zipper
         BZipper: Zipper + ZipperValues<BV>,
         Mapping: for<'a> Fn(Option<&'a AV>, Option<&'a BV>) -> Option<&'a OutV>,
 {
+    fn trace_uid(&self) -> u64 { self.uid.get() }
     fn path_exists(&self) -> bool {
+        crate::trace::trace_point!(path_exists, self.uid);
         self.a.path_exists() || self.b.path_exists()
     }
     fn is_val(&self) -> bool {
+        crate::trace::trace_point!(is_val, self.uid);
         //NOTE: the mapping function has the ability to nullify the value, so we need ZipperValues to implement this correctly
         // self.a.is_val() || self.b.is_val()
         self.val().is_some()
     }
     fn child_count(&self) -> usize {
+        crate::trace::trace_point!(child_count, self.uid);
         self.child_mask().count_bits()
     }
     fn child_mask(&self) -> ByteMask {
+        crate::trace::trace_point!(child_mask, self.uid);
         self.a.child_mask() | self.b.child_mask()
     }
 }
@@ -148,17 +158,20 @@ impl<AV, BV, OutV, AZipper, BZipper, Mapping> ZipperMoving
 {
     #[inline]
     fn depth(&self) -> usize {
+        crate::trace::trace_point!(depth, self.uid);
         let depth = self.a.depth();
         debug_assert_eq!(depth, self.b.depth());
         depth
     }
 
     fn at_root(&self) -> bool {
+        crate::trace::trace_point!(at_root, self.uid);
         self.a.at_root() || self.b.at_root()
     }
 
     #[inline]
     fn focus_byte(&self) -> Option<u8> {
+        crate::trace::trace_point!(focus_byte, self.uid);
         //The sources may be rooted at different paths, so at the root their bytes differ
         if self.depth() == 0 {
             return None;
@@ -169,21 +182,25 @@ impl<AV, BV, OutV, AZipper, BZipper, Mapping> ZipperMoving
     }
 
     fn reset(&mut self) {
+        crate::trace::trace_point!(reset, self.uid);
         self.a.reset();
         self.b.reset();
     }
 
     fn val_count(&self) -> usize {
+        crate::trace::trace_point!(val_count, self.uid);
         todo!()
     }
 
     fn descend_to<P: AsRef<[u8]>>(&mut self, path: P) {
+        crate::trace::trace_point!(descend_to, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         let path = path.as_ref();
         self.a.descend_to(path);
         self.b.descend_to(path);
     }
 
     fn descend_to_existing<P: AsRef<[u8]>>(&mut self, path: P) -> usize {
+        crate::trace::trace_point!(descend_to_existing, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         let path = path.as_ref();
         let depth_a = self.a.descend_to_existing(path);
         let depth_b = self.b.descend_to_existing(path);
@@ -199,6 +216,7 @@ impl<AV, BV, OutV, AZipper, BZipper, Mapping> ZipperMoving
     }
 
     fn descend_to_val<K: AsRef<[u8]>>(&mut self, path: K) -> usize {
+        crate::trace::trace_point!(descend_to_val, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         let path = path.as_ref();
         let mut descended = 0;
         while descended < path.len() {
@@ -234,15 +252,18 @@ impl<AV, BV, OutV, AZipper, BZipper, Mapping> ZipperMoving
     }
 
     fn descend_to_byte(&mut self, k: u8) {
+        crate::trace::trace_point!(descend_to_byte, self.uid, k);
         self.a.descend_to(&[k]);
         self.b.descend_to(&[k]);
     }
 
     fn descend_first_byte(&mut self) -> Option<u8> {
+        crate::trace::trace_point!(descend_first_byte, self.uid);
         self.descend_indexed_byte(0)
     }
 
     fn descend_indexed_byte(&mut self, idx: usize) -> Option<u8> {
+        crate::trace::trace_point!(descend_indexed_byte, self.uid, idx);
         let child_mask = self.child_mask();
         let byte = child_mask.indexed_bit::<true>(idx)?;
         self.descend_to_byte(byte);
@@ -250,6 +271,7 @@ impl<AV, BV, OutV, AZipper, BZipper, Mapping> ZipperMoving
     }
 
     fn descend_until_observed<Obs: PathObserver>(&mut self, obs: &mut Obs) -> bool {
+        crate::trace::trace_point!(descend_until_observed, self.uid);
         //Descending happens in buffer-sized chunks, so neither source can outrun what we're able
         // to capture.  As long as both sources fill a whole chunk and agree on every byte of it,
         // the chunk is committed and we go around again.  Any other outcome ends the descent and
@@ -329,6 +351,7 @@ impl<AV, BV, OutV, AZipper, BZipper, Mapping> ZipperMoving
     }
 
     fn ascend(&mut self, steps: usize) -> usize {
+        crate::trace::trace_point!(ascend, self.uid, steps);
         //Both sources move together, so they must report the same distance
         let a = self.a.ascend(steps);
         let b = self.b.ascend(steps);
@@ -337,10 +360,12 @@ impl<AV, BV, OutV, AZipper, BZipper, Mapping> ZipperMoving
     }
 
     fn ascend_byte(&mut self) -> bool {
+        crate::trace::trace_point!(ascend_byte, self.uid);
         self.ascend(1) == 1
     }
 
     fn ascend_until(&mut self) -> usize {
+        crate::trace::trace_point!(ascend_until, self.uid);
         debug_assert_eq!(self.a.path(), self.b.path());
         let start_depth = self.a.path().len();
         let asc_a = self.a.ascend_until();
@@ -362,6 +387,7 @@ impl<AV, BV, OutV, AZipper, BZipper, Mapping> ZipperMoving
     }
 
     fn ascend_until_branch(&mut self) -> usize {
+        crate::trace::trace_point!(ascend_until_branch, self.uid);
         let start_depth = self.a.path().len();
         let _asc_a = self.a.ascend_until_branch();
         let path_a = self.a.path();
@@ -379,10 +405,12 @@ impl<AV, BV, OutV, AZipper, BZipper, Mapping> ZipperMoving
     }
 
     fn to_next_sibling_byte(&mut self) -> Option<u8> {
+        crate::trace::trace_point!(to_next_sibling_byte, self.uid);
         self.to_sibling(true)
     }
 
     fn to_prev_sibling_byte(&mut self) -> Option<u8> {
+        crate::trace::trace_point!(to_prev_sibling_byte, self.uid);
         self.to_sibling(false)
     }
 }
@@ -395,6 +423,7 @@ impl<AV, BV, OutV, AZipper, BZipper, Mapping> ZipperPath
         Mapping: for<'a> Fn(Option<&'a AV>, Option<&'a BV>) -> Option<&'a OutV>,
 {
     fn path(&self) -> &[u8] {
+        crate::trace::trace_point!(path, self.uid);
         self.a.path()
     }
 }

@@ -133,6 +133,8 @@ impl SurvivalWitness {
 }
 
 pub struct SubtractZipper<V, A, B> {
+    /// Identifies the zipper in traces, see [crate::trace]
+    uid: crate::trace::ZipperUid,
     lhs: A,
     rhs: B,
 
@@ -188,6 +190,7 @@ where
     pub fn new(lhs: A, rhs: B) -> Self {
         let lhs_root_depth = lhs.depth();
         let mut this = Self {
+            uid: crate::trace::new_uid!(SubtractZipper),
             lhs,
             rhs,
             lhs_root_depth,
@@ -909,13 +912,16 @@ where
     A: Zipper,
     B: Zipper,
 {
+    fn trace_uid(&self) -> u64 { self.uid.get() }
     #[inline]
     fn path_exists(&self) -> bool {
+        crate::trace::trace_point!(path_exists, self.uid);
         self.is_val() || !self.child_mask.is_empty_mask()
     }
 
     #[inline]
     fn is_val(&self) -> bool {
+        crate::trace::trace_point!(is_val, self.uid);
         match self.val {
             CachedVal::None => false,
             CachedVal::Lhs => self.lhs.is_val(),
@@ -925,11 +931,13 @@ where
 
     #[inline]
     fn child_count(&self) -> usize {
+        crate::trace::trace_point!(child_count, self.uid);
         self.child_mask.count_bits()
     }
 
     #[inline]
     fn child_mask(&self) -> ByteMask {
+        crate::trace::trace_point!(child_mask, self.uid);
         self.child_mask
     }
 }
@@ -942,6 +950,7 @@ where
 {
     #[inline]
     fn val(&self) -> Option<&V> {
+        crate::trace::trace_point!(val, self.uid);
         match self.val {
             CachedVal::None => None,
             CachedVal::Lhs => self.lhs.val(),
@@ -958,11 +967,13 @@ where
 {
     #[inline]
     fn depth(&self) -> usize {
+        crate::trace::trace_point!(depth, self.uid);
         self.lhs.depth() - self.lhs_root_depth
     }
 
     #[inline]
     fn focus_byte(&self) -> Option<u8> {
+        crate::trace::trace_point!(focus_byte, self.uid);
         if self.depth() == 0 {
             None
         } else {
@@ -976,6 +987,7 @@ where
     // }
 
     fn val_count(&self) -> usize {
+        crate::trace::trace_point!(val_count, self.uid);
         if let Some(count) = self.val_count.get() {
             return count;
         }
@@ -997,6 +1009,7 @@ where
     }
 
     fn descend_to<K: AsRef<[u8]>>(&mut self, path: K) {
+        crate::trace::trace_point!(descend_to, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         let path = path.as_ref();
         if path.is_empty() {
             return;
@@ -1013,6 +1026,7 @@ where
     }
 
     fn ascend(&mut self, steps: usize) -> usize {
+        crate::trace::trace_point!(ascend, self.uid, steps);
         let actual_steps = steps.min(self.depth());
         if actual_steps == 0 {
             return 0;
@@ -1028,6 +1042,7 @@ where
     }
 
     fn ascend_until(&mut self) -> usize {
+        crate::trace::trace_point!(ascend_until, self.uid);
         if self.at_root() {
             return 0;
         }
@@ -1056,6 +1071,7 @@ where
     }
 
     fn ascend_until_branch(&mut self) -> usize {
+        crate::trace::trace_point!(ascend_until_branch, self.uid);
         if self.at_root() {
             return 0;
         }
@@ -1084,6 +1100,7 @@ where
     }
 
     fn reset(&mut self) {
+        crate::trace::trace_point!(reset, self.uid);
         let depth = self.depth();
 
         if depth != 0 {
@@ -1098,6 +1115,7 @@ where
     }
 
     fn descend_to_existing<K: AsRef<[u8]>>(&mut self, k: K) -> usize {
+        crate::trace::trace_point!(descend_to_existing, self.uid, AsRef::<[u8]>::as_ref(&k).as_ptr(), AsRef::<[u8]>::as_ref(&k).len());
         let k = k.as_ref();
         if k.is_empty() {
             return 0;
@@ -1176,6 +1194,7 @@ where
     }
 
     fn descend_to_val<K: AsRef<[u8]>>(&mut self, k: K) -> usize {
+        crate::trace::trace_point!(descend_to_val, self.uid, AsRef::<[u8]>::as_ref(&k).as_ptr(), AsRef::<[u8]>::as_ref(&k).len());
         let k = k.as_ref();
 
         // The cached virtual child mask is valid at the initial focus, so the
@@ -1240,6 +1259,7 @@ where
     }
 
     fn descend_to_existing_byte(&mut self, k: u8) -> bool {
+        crate::trace::trace_point!(descend_to_existing_byte, self.uid, k);
         if !self.child_mask.test_bit(k) {
             return false;
         }
@@ -1251,16 +1271,19 @@ where
 
     #[inline]
     fn descend_until(&mut self) -> bool {
+        crate::trace::trace_point!(descend_until, self.uid);
         self.descend_until(&mut (), None)
     }
 
     #[inline]
     fn descend_until_observed<Obs: PathObserver>(&mut self, obs: &mut Obs) -> bool {
+        crate::trace::trace_point!(descend_until_observed, self.uid);
         self.descend_until(obs, None)
     }
 
     #[inline]
     fn descend_until_max_bytes(&mut self, max_bytes: usize) -> bool {
+        crate::trace::trace_point!(descend_until_max_bytes, self.uid, max_bytes);
         match NonZeroUsize::new(max_bytes) {
             Some(limit) => self.descend_until(&mut (), Some(limit)),
             None => false,
@@ -1273,6 +1296,7 @@ where
         max_bytes: usize,
         obs: &mut Obs,
     ) -> bool {
+        crate::trace::trace_point!(descend_until_max_bytes_observed, self.uid, max_bytes);
         match NonZeroUsize::new(max_bytes) {
             Some(limit) => self.descend_until(obs, Some(limit)),
             None => false,
@@ -1280,6 +1304,7 @@ where
     }
 
     fn to_next_sibling_byte(&mut self) -> Option<u8> {
+        crate::trace::trace_point!(to_next_sibling_byte, self.uid);
         let cur_byte = self.focus_byte()?;
 
         // Move both backing zippers to the parent without refreshing the
@@ -1303,6 +1328,7 @@ where
     }
 
     fn to_prev_sibling_byte(&mut self) -> Option<u8> {
+        crate::trace::trace_point!(to_prev_sibling_byte, self.uid);
         let cur_byte = self.focus_byte()?;
 
         // Move both backing zippers to the parent without refreshing the
@@ -1326,6 +1352,7 @@ where
     }
 
     fn to_next_step_observed<P: PathObserver>(&mut self, obs: &mut P) -> bool {
+        crate::trace::trace_point!(to_next_step_observed, self.uid);
         // If there is a child, DFS simply descends into the first one.
         if let Some(byte) = self.child_mask.indexed_bit::<true>(0) {
             self.descend_to_byte_raw(byte);
@@ -1376,10 +1403,12 @@ where
 {
     #[inline]
     fn path(&self) -> &[u8] {
+        crate::trace::trace_point!(path, self.uid);
         &self.lhs.path()[self.lhs_root_depth..]
     }
 
     fn move_to_path<K: AsRef<[u8]>>(&mut self, path: K) -> usize {
+        crate::trace::trace_point!(move_to_path, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         let path = path.as_ref();
 
         let current = self.path();
@@ -1425,6 +1454,7 @@ where
     B: ZipperMoving + ZipperValues<V> + Clone,
 {
     fn to_next_val_observed<P: PathObserver>(&mut self, obs: &mut P) -> bool {
+        crate::trace::trace_point!(to_next_val_observed, self.uid);
         // The cache is valid at entry, so use it to select the first child
         // without recomputing the virtual topology.
         let mut next_byte = self.child_mask.indexed_bit::<true>(0);
@@ -1481,6 +1511,7 @@ where
     }
 
     fn descend_first_k_path_observed<P: PathObserver>(&mut self, k: usize, obs: &mut P) -> bool {
+        crate::trace::trace_point!(descend_first_k_path_observed, self.uid, k);
         if k == 0 {
             return false;
         }
@@ -1503,6 +1534,7 @@ where
     }
 
     fn to_next_k_path_observed<P: PathObserver>(&mut self, k: usize, obs: &mut P) -> bool {
+        crate::trace::trace_point!(to_next_k_path_observed, self.uid, k);
         let Some(base_idx) = self.depth().checked_sub(k) else {
             return false;
         };
@@ -1529,10 +1561,12 @@ where
     B: ZipperMoving + ZipperValues<V> + Clone,
 {
     fn origin_path(&self) -> &[u8] {
+        crate::trace::trace_point!(origin_path, self.uid);
         self.lhs.path()
     }
 
     fn root_prefix_path(&self) -> &[u8] {
+        crate::trace::trace_point!(root_prefix_path, self.uid);
         &self.lhs.path()[0..self.lhs_root_depth]
     }
 }

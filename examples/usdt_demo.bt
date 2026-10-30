@@ -1,0 +1,54 @@
+#!/usr/bin/env bpftrace
+// Traces examples/usdt_demo.rs through pathmap's USDT probes.  Run from the repository root:
+//
+//   cargo build --release --example usdt_demo --features trace_usdt
+//   sudo bpftrace -e "$(cat examples/usdt_demo.bt)" -c target/release/examples/usdt_demo
+//
+// Passing the file itself (`sudo bpftrace examples/usdt_demo.bt -c ...`) is the usual form, but
+// bpftrace 0.25 aborts on it in `SourceLocation::source_context` while reporting warnings from its
+// own vmlinux.h; feeding the text through -e avoids that.
+//
+// List every probe in the binary with:
+//
+//   sudo bpftrace -l 'usdt:target/release/examples/usdt_demo:pathmap:*'
+//
+// arg0 of every event is the zipper's uid.  The other arguments are listed by
+// pathmap::trace::Event::arg_names.  Paths come as (pointer, length), values as a pointer.
+
+BEGIN {
+    // pathmap::trace::ZipperKind
+    @kind[1] = "ReadZipperTracked";        @kind[2] = "ReadZipperUntracked";
+    @kind[3] = "ReadZipperOwned";          @kind[4] = "WriteZipperTracked";
+    @kind[5] = "WriteZipperUntracked";     @kind[6] = "WriteZipperOwned";
+    @kind[7] = "ProductZipper";            @kind[8] = "ProductZipperG";
+    @kind[9] = "DependentProductZipperG";  @kind[10] = "PrefixZipper";
+    @kind[11] = "OverlayZipper";           @kind[12] = "SubtractZipper";
+    @kind[13] = "EmptyZipper";             @kind[14] = "ACTZipper";
+    @kind[15] = "DiffZipper";              @kind[16] = "FullZipper";
+    @kind[17] = "NullZipper";
+}
+
+// Lifecycle
+usdt:target/release/examples/usdt_demo:pathmap:zipper_new    { printf("uid %-4d new     %s\n", arg0, @kind[arg1]); }
+usdt:target/release/examples/usdt_demo:pathmap:zipper_clone  { printf("uid %-4d clone   of uid %d\n", arg0, arg1); }
+usdt:target/release/examples/usdt_demo:pathmap:zipper_derive { printf("uid %-4d derive  from uid %d\n", arg0, arg1); }
+usdt:target/release/examples/usdt_demo:pathmap:zipper_drop   { printf("uid %-4d drop\n", arg0); }
+
+// Movement and writes
+usdt:target/release/examples/usdt_demo:pathmap:descend_to      { printf("uid %-4d descend_to      \"%r\"\n", arg0, buf(arg1, arg2)); }
+usdt:target/release/examples/usdt_demo:pathmap:descend_to_byte { printf("uid %-4d descend_to_byte '%c'\n", arg0, arg1); }
+usdt:target/release/examples/usdt_demo:pathmap:reset           { printf("uid %-4d reset\n", arg0); }
+usdt:target/release/examples/usdt_demo:pathmap:set_val         { printf("uid %-4d set_val         %d\n", arg0, *(uint64 *)arg1); }
+usdt:target/release/examples/usdt_demo:pathmap:graft           { printf("uid %-4d graft           from uid %d\n", arg0, arg1); }
+usdt:target/release/examples/usdt_demo:pathmap:fork_read_zipper { printf("uid %-4d fork_read_zipper\n", arg0); }
+
+// Iteration is summarized per zipper instead of printed.  Zippers that inherit the default
+// `to_next_val` only fire `to_next_val_observed`, so match both
+usdt:target/release/examples/usdt_demo:pathmap:to_next_val* { @to_next_val_per_uid[arg0] = count(); }
+
+// Hit counts for every probe
+usdt:target/release/examples/usdt_demo:pathmap:* { @hits[probe] = count(); }
+
+END {
+    clear(@kind);
+}

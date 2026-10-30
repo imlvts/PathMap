@@ -73,6 +73,8 @@ mod trie_map;
 pub use trie_map::PathMap;
 
 /// Cursors that can move over a trie, to inspect and modify contained elements or entire branches
+pub mod trace;
+
 #[macro_use]
 pub mod zipper;
 

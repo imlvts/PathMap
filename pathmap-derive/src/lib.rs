@@ -301,6 +301,13 @@ fn derive_poly_zipper_with_traits(
                         #(#variant_arms => inner.child_mask(),)*
                     }
                 }
+
+                // The enum has no id of its own; traces name the active inner zipper
+                fn trace_uid(&self) -> u64 {
+                    match self {
+                        #(#variant_arms => inner.trace_uid(),)*
+                    }
+                }
             }
         })
     } else {

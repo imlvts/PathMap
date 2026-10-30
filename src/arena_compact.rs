@@ -2365,6 +2365,8 @@ impl StackFrame {
 pub struct ACTZipper<'tree, Storage, Value>
 where Storage: AsRef<[u8]>
 {
+    /// Identifies the zipper in traces, see [crate::trace]
+    uid: crate::trace::ZipperUid,
     tree: &'tree ArenaCompactTree<Storage>,
     cur_node: Node,
     stack: Vec<StackFrame>,
@@ -2386,6 +2388,7 @@ where Storage: AsRef<[u8]>
             origin_depth, origin_node_depth, invalid, origin_invalid, ..
         } = self;
         Self {
+            uid: self.uid.clone(),
             tree,
             cur_node: cur_node.clone(),
             stack: stack.clone(),
@@ -2444,6 +2447,7 @@ where Storage: AsRef<[u8]>
         let (cur_node, node_id) = tree.get_root();
         let stack_frame = StackFrame::from(&cur_node, node_id);
         ACTZipper {
+            uid: crate::trace::new_uid!(ACTZipper),
             tree, cur_node,
             path: Vec::new(),
             invalid: 0,
@@ -2474,6 +2478,7 @@ where Storage: AsRef<[u8]>
     type WitnessT = ();
     fn witness<'w>(&self) -> Self::WitnessT {}
     fn get_val_with_witness<'w>(&self, _witness: &'w Self::WitnessT) -> Option<&'w ()> where 'tree: 'w {
+        crate::trace::trace_point!(get_val_with_witness, self.uid);
         self.get_val()
     }
 }
@@ -2484,6 +2489,7 @@ where Storage: AsRef<[u8]>
     type WitnessT = ();
     fn witness<'w>(&self) -> Self::WitnessT {}
     fn get_val_with_witness<'w>(&self, _witness: &'w Self::WitnessT) -> Option<&'w u64> where 'tree: 'w {
+        crate::trace::trace_point!(get_val_with_witness, self.uid);
         self.get_val()
     }
 }
@@ -2491,13 +2497,16 @@ where Storage: AsRef<[u8]>
 impl<'tree, Storage, Value> Zipper for ACTZipper<'tree, Storage, Value>
 where Storage: AsRef<[u8]>
 {
+    fn trace_uid(&self) -> u64 { self.uid.get() }
     /// Returns `true` if the zipper's focus is on a path within the trie, otherwise `false`
     fn path_exists(&self) -> bool {
+        crate::trace::trace_point!(path_exists, self.uid);
         self.invalid == 0
     }
 
     /// Returns `true` if there is a value at the zipper's focus, otherwise `false`
     fn is_val(&self) -> bool {
+        crate::trace::trace_point!(is_val, self.uid);
         if self.invalid > 0 {
             return false;
         }
@@ -2521,6 +2530,7 @@ where Storage: AsRef<[u8]>
     ///
     /// Returns 0 if the focus is on a leaf
     fn child_count(&self) -> usize {
+        crate::trace::trace_point!(child_count, self.uid);
         if self.invalid > 0 {
             return 0;
         }
@@ -2544,6 +2554,7 @@ where Storage: AsRef<[u8]>
     ///
     /// Returns an empty mask if the focus is on a leaf or non-existent path
     fn child_mask(&self) -> ByteMask {
+        crate::trace::trace_point!(child_mask, self.uid);
         if self.invalid > 0 {
             return ByteMask::EMPTY;
         }
@@ -2568,17 +2579,19 @@ impl<'tree, Storage, Value> ZipperPath for ACTZipper<'tree, Storage, Value>
 where Storage: AsRef<[u8]>
 {
     /// Returns the path from the zipper's root to the current focus
-    fn path(&self) -> &[u8] { &self.path[self.origin_depth..] }
+    fn path(&self) -> &[u8] { crate::trace::trace_point!(path, self.uid); &self.path[self.origin_depth..] }
 }
 
 impl<'tree, Storage, Value> ZipperAbsolutePath for ACTZipper<'tree, Storage, Value>
 where Storage: AsRef<[u8]>
 {
     fn origin_path(&self) -> &[u8] {
+        crate::trace::trace_point!(origin_path, self.uid);
         &self.path[..]
     }
 
     fn root_prefix_path(&self) -> &[u8] {
+        crate::trace::trace_point!(root_prefix_path, self.uid);
         &self.path[..self.origin_depth]
     }
 }
@@ -2605,8 +2618,8 @@ impl<'tree, Storage> ZipperSubtries<(), GlobalAlloc> for ACTZipper<'tree, Storag
 where Storage: AsRef<[u8]>
 {
     fn native_subtries(&self) -> bool { false }
-    fn try_make_map(&self) -> Option<PathMap<(), GlobalAlloc>> { None }
-    fn trie_ref(&self) -> Option<TrieRef<'_, (), GlobalAlloc>> { None }
+    fn try_make_map(&self) -> Option<PathMap<(), GlobalAlloc>> { crate::trace::trace_point!(try_make_map, self.uid); None }
+    fn trie_ref(&self) -> Option<TrieRef<'_, (), GlobalAlloc>> { crate::trace::trace_point!(trie_ref, self.uid); None }
     fn alloc(&self) -> GlobalAlloc { global_alloc() }
 }
 
@@ -2896,6 +2909,7 @@ impl<'tree, Storage> ZipperValues<()> for ACTZipper<'tree, Storage, ()>
 where Storage: AsRef<[u8]>
 {
     fn val(&self) -> Option<&()> {
+        crate::trace::trace_point!(val, self.uid);
         self.get_value().map(|_x| &())
     }
 }
@@ -2904,6 +2918,7 @@ impl<'tree, Storage> ZipperValuesAt<()> for ACTZipper<'tree, Storage, ()>
 where Storage: AsRef<[u8]>
 {
     fn val_at<K: AsRef<[u8]>>(&self, path: K) -> Option<&()> {
+        crate::trace::trace_point!(val_at, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         self.get_value_at(path.as_ref()).map(|_x| &())
     }
 }
@@ -2912,6 +2927,7 @@ impl<'tree, Storage> ZipperValues<u64> for ACTZipper<'tree, Storage, u64>
 where Storage: AsRef<[u8]>
 {
     fn val(&self) -> Option<&u64> {
+        crate::trace::trace_point!(val, self.uid);
         //GOAT, see soundness discussion in ZipperReadOnlyValues impl below
         self.get_val()
     }
@@ -2921,6 +2937,7 @@ impl<'tree, Storage> ZipperValuesAt<u64> for ACTZipper<'tree, Storage, u64>
 where Storage: AsRef<[u8]>
 {
     fn val_at<K: AsRef<[u8]>>(&self, path: K) -> Option<&u64> {
+        crate::trace::trace_point!(val_at, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         //GOAT, see soundness discussion in ZipperReadOnlyValues impl below
         self.get_val_at(path)
     }
@@ -2931,6 +2948,7 @@ where Storage: AsRef<[u8]>
 {
     type ReadZipperT<'t> = ACTZipper<'t, Storage, ()> where Self: 't;
     fn fork_read_zipper<'a>(&'a self) -> Option<Self::ReadZipperT<'a>> {
+        crate::trace::trace_point!(fork_read_zipper, self.uid);
         if !self.path_exists() { return None; }
         Some(self.clone().with_root_here())
     }
@@ -2941,6 +2959,7 @@ where Storage: AsRef<[u8]>
 {
     type ReadZipperT<'t> = ACTZipper<'t, Storage, u64> where Self: 't;
     fn fork_read_zipper<'a>(&'a self) -> Option<Self::ReadZipperT<'a>> {
+        crate::trace::trace_point!(fork_read_zipper, self.uid);
         if !self.path_exists() { return None; }
         Some(self.clone().with_root_here())
     }
@@ -2950,9 +2969,11 @@ impl<'tree, Storage> ZipperReadOnlyValues<'tree, ()> for ACTZipper<'tree, Storag
 where Storage: AsRef<[u8]>
 {
     fn get_val(&self) -> Option<&'tree ()> {
+        crate::trace::trace_point!(get_val, self.uid);
         self.get_value().map(|_x| &())
     }
     fn get_val_at<K: AsRef<[u8]>>(&self, path: K) -> Option<&'tree ()> {
+        crate::trace::trace_point!(get_val_at, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         self.get_value_at(path.as_ref()).map(|_x| &())
     }
 }
@@ -2961,6 +2982,7 @@ impl<'tree, Storage> ZipperReadOnlyValues<'tree, u64> for ACTZipper<'tree, Stora
 where Storage: AsRef<[u8]>
 {
     fn get_val(&self) -> Option<&'tree u64> {
+        crate::trace::trace_point!(get_val, self.uid);
         let value = self.get_value()?;
         if self.tree.value.get() != value {
             self.tree.value.set(value);
@@ -2980,6 +3002,7 @@ where Storage: AsRef<[u8]>
         Some(unsafe { &*ptr })
     }
     fn get_val_at<K: AsRef<[u8]>>(&self, path: K) -> Option<&'tree u64> {
+        crate::trace::trace_point!(get_val_at, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         let value = self.get_value_at(path.as_ref())?;
         if self.tree.value.get() != value {
             self.tree.value.set(value);
@@ -2993,10 +3016,12 @@ impl<'tree, Storage, Value> ZipperConcrete for ACTZipper<'tree, Storage, Value>
 where Storage: AsRef<[u8]>
 {
     fn shared_node_id(&self) -> Option<u64> {
+        crate::trace::trace_point!(shared_node_id, self.uid);
         // TODO: no way to detect now
         None
     }
     fn is_shared(&self) -> bool {
+        crate::trace::trace_point!(is_shared, self.uid);
         // TODO: no way to detect now
         false
     }
@@ -3007,18 +3032,20 @@ impl<'tree, Storage, Value> ZipperMoving for ACTZipper<'tree, Storage, Value>
 where Storage: AsRef<[u8]>
 {
     #[inline]
-    fn depth(&self) -> usize { self.path.len().saturating_sub(self.origin_depth) }
+    fn depth(&self) -> usize { crate::trace::trace_point!(depth, self.uid); self.path.len().saturating_sub(self.origin_depth) }
 
     /// Returns `true` if the zipper cannot ascend further, otherwise returns `false`
-    fn at_root(&self) -> bool { self.path.len() <= self.origin_depth }
+    fn at_root(&self) -> bool { crate::trace::trace_point!(at_root, self.uid); self.path.len() <= self.origin_depth }
 
     #[inline]
     fn focus_byte(&self) -> Option<u8> {
+        crate::trace::trace_point!(focus_byte, self.uid);
         self.path.last().cloned()
     }
 
     /// Resets the zipper's focus back to the root
     fn reset(&mut self) {
+        crate::trace::trace_point!(reset, self.uid);
         timed_span!(Reset, COUNTERS);
         // self.ascend(self.path.len() - self.origin_depth);
         let (cur_node, _) = self.tree.get_node(self.stack[0].node_id);
@@ -3034,6 +3061,7 @@ where Storage: AsRef<[u8]>
     ///
     /// WARNING: This is not a cheap method. It may have an order-N cost
     fn val_count(&self) -> usize {
+        crate::trace::trace_point!(val_count, self.uid);
         timed_span!(ValueCount, COUNTERS);
         let mut zipper = self.clone();
         zipper.reset();
@@ -3052,6 +3080,7 @@ where Storage: AsRef<[u8]>
     /// Returns `true` if the zipper points to an existing path within the tree, otherwise `false`.  The
     /// zipper's location will be updated, regardless of whether or not the path exists within the tree.
     fn descend_to<P: AsRef<[u8]>>(&mut self, path: P) {
+        crate::trace::trace_point!(descend_to, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         timed_span!(DescendTo, COUNTERS);
         let path = path.as_ref();
         let depth = path.len();
@@ -3069,6 +3098,7 @@ where Storage: AsRef<[u8]>
     /// existing path after this method returns, unless the method was called with the focus on a
     /// non-existent path.
     fn descend_to_existing<P: AsRef<[u8]>>(&mut self, path: P) -> usize {
+        crate::trace::trace_point!(descend_to_existing, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         timed_span!(DescendToExisting, COUNTERS);
         self.descend_cond(path.as_ref(), false)
     }
@@ -3081,6 +3111,7 @@ where Storage: AsRef<[u8]>
     /// If the focus is already on a value, this method will descend to the *next* value along
     /// the path.
     fn descend_to_val<K: AsRef<[u8]>>(&mut self, path: K) -> usize {
+        crate::trace::trace_point!(descend_to_val, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         timed_span!(DescendToVal, COUNTERS);
         self.descend_cond(path.as_ref(), true)
     }
@@ -3088,6 +3119,7 @@ where Storage: AsRef<[u8]>
     /// Moves the zipper one byte deeper into the trie.  Identical in effect to [descend_to](Self::descend_to)
     /// with a 1-byte key argument
     fn descend_to_byte(&mut self, k: u8) {
+        crate::trace::trace_point!(descend_to_byte, self.uid, k);
         timed_span!(DescendToByte, COUNTERS);
         self.descend_to(&[k])
     }
@@ -3100,6 +3132,7 @@ where Storage: AsRef<[u8]>
     /// to the trie.  This method should only be used as part of a directed traversal operation, but
     /// index-based paths may not be stored as locations within the trie.
     fn descend_indexed_byte(&mut self, idx: usize) -> Option<u8> {
+        crate::trace::trace_point!(descend_indexed_byte, self.uid, idx);
         timed_span!(DescendIndexedByte, COUNTERS);
         if self.invalid > 0 {
             return None;
@@ -3158,6 +3191,7 @@ where Storage: AsRef<[u8]>
     /// NOTE: This method should have identical behavior to passing `0` to [descend_indexed_byte](ZipperMoving::descend_indexed_byte),
     /// although with less overhead
     fn descend_first_byte(&mut self) -> Option<u8> {
+        crate::trace::trace_point!(descend_first_byte, self.uid);
         timed_span!(DescendFirstByte, COUNTERS);
         self.descend_indexed_byte(0)
     }
@@ -3165,6 +3199,7 @@ where Storage: AsRef<[u8]>
     /// Descends the zipper's focus until a branch or a value is encountered.  Returns `true` if the focus
     /// moved otherwise returns `false`
     fn descend_until_observed<Obs: PathObserver>(&mut self, obs: &mut Obs) -> bool {
+        crate::trace::trace_point!(descend_until_observed, self.uid);
         timed_span!(DescendUntil, COUNTERS);
         self.trace_pos();
         let mut descended = false;
@@ -3218,6 +3253,7 @@ where Storage: AsRef<[u8]>
     /// If the root is fewer than `n` steps from the zipper's position, then this method will stop at
     /// the root and return `false`
     fn ascend(&mut self, steps: usize) -> usize {
+        crate::trace::trace_point!(ascend, self.uid, steps);
         timed_span!(Ascend, COUNTERS);
         self.trace_pos();
         let mut remaining = steps;
@@ -3247,6 +3283,7 @@ where Storage: AsRef<[u8]>
 
     /// Ascends the zipper up a single byte.  Equivalent to passing `1` to [ascend](Self::ascend)
     fn ascend_byte(&mut self) -> bool {
+        crate::trace::trace_point!(ascend_byte, self.uid);
         timed_span!(AscendByte, COUNTERS);
         self.ascend(1) == 1
     }
@@ -3254,6 +3291,7 @@ where Storage: AsRef<[u8]>
     /// Ascends the zipper to the nearest upstream branch point or value.  Returns the number of bytes
     /// ascended.  Returns `0` if the zipper was already at the root
     fn ascend_until(&mut self) -> usize {
+        crate::trace::trace_point!(ascend_until, self.uid);
         timed_span!(AscendUntil, COUNTERS);
         self.ascend_to_branch(true)
     }
@@ -3261,18 +3299,21 @@ where Storage: AsRef<[u8]>
     /// Ascends the zipper to the nearest upstream branch point, skipping over values along the way.  Returns
     /// the number of bytes ascended.  Returns `0` if the zipper was already at the root
     fn ascend_until_branch(&mut self) -> usize {
+        crate::trace::trace_point!(ascend_until_branch, self.uid);
         timed_span!(AscendUntilBranch, COUNTERS);
         self.ascend_to_branch(false)
     }
 
     #[inline]
     fn to_next_sibling_byte(&mut self) -> Option<u8> {
+        crate::trace::trace_point!(to_next_sibling_byte, self.uid);
         timed_span!(ToNextSiblingByte, COUNTERS);
         self.to_sibling(true)
     }
 
     #[inline]
     fn to_prev_sibling_byte(&mut self) -> Option<u8> {
+        crate::trace::trace_point!(to_prev_sibling_byte, self.uid);
         timed_span!(ToPrevSiblingByte, COUNTERS);
         self.to_sibling(false)
     }
@@ -3289,6 +3330,7 @@ where Storage: AsRef<[u8]>
     ///
     /// Returns a reference to the value or `None` if the zipper has encountered the root.
     fn to_next_val_observed<Obs: PathObserver>(&mut self, obs: &mut Obs) -> bool {
+        crate::trace::trace_point!(to_next_val_observed, self.uid);
         timed_span!(ToNextVal, COUNTERS);
         while self.to_next_step_observed(obs)  {
             if self.is_val() {
@@ -3309,6 +3351,7 @@ where Storage: AsRef<[u8]>
     ///
     /// See: [to_next_k_path](ZipperIteration::to_next_k_path)
     fn descend_first_k_path_observed<Obs: PathObserver>(&mut self, k: usize, obs: &mut Obs) -> bool {
+        crate::trace::trace_point!(descend_first_k_path_observed, self.uid, k);
         timed_span!(DescendFirstKPath, COUNTERS);
         if k == 0 {
             return false;

@@ -8,6 +8,8 @@ use zipper_priv::*;
 /// A [Zipper] type that moves through a Cartesian product trie created by extending each path in a primary
 /// trie with the root of the next secondardary trie, doing it recursively for all provided tries
 pub struct ProductZipper<'factor_z, 'trie, V: Clone + Send + Sync, A: Allocator = GlobalAlloc> {
+    /// Identifies the zipper in traces, see [crate::trace]
+    uid: crate::trace::ZipperUid,
     z: read_zipper_core::ReadZipperCore<'trie, 'static, V, A>,
     /// All of the seconday factors beyond the primary factor
     secondaries: Vec<TrieRef<'trie, V, A>>,
@@ -65,7 +67,7 @@ impl<'factor_z, 'trie, V: Clone + Send + Sync + Unpin, A: Allocator> ProductZipp
             source_zippers.push(Box::new(other_z));
         }
 
-        Self{z: core_z, factor_paths: Vec::with_capacity(secondaries.len()), secondaries, source_zippers}
+        Self{ uid: crate::trace::new_uid!(ProductZipper), z: core_z, factor_paths: Vec::with_capacity(secondaries.len()), secondaries, source_zippers}
     }
     /// Creates a new `ProductZipper` from a single zipper, with the expectation that more zippers
     /// will be added using [new_factors](Self::new_factors)
@@ -79,7 +81,7 @@ impl<'factor_z, 'trie, V: Clone + Send + Sync + Unpin, A: Allocator> ProductZipp
         let core_z = primary_z.take_core().unwrap();
         source_zippers.push(Box::new(primary_z) as Box<dyn Zipper>);
 
-        Self{z: core_z, factor_paths: Vec::new(), secondaries: vec![], source_zippers}
+        Self{ uid: crate::trace::new_uid!(ProductZipper), z: core_z, factor_paths: Vec::new(), secondaries: vec![], source_zippers}
     }
     /// Appends additional factors to a `ProductZipper`.  This is useful when dealing with
     /// factor zippers of different types
@@ -164,21 +166,26 @@ impl<'factor_z, 'trie, V: Clone + Send + Sync + Unpin, A: Allocator> ProductZipp
 impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperMoving for ProductZipper<'_, 'trie, V, A> {
     #[inline]
     fn depth(&self) -> usize {
+        crate::trace::trace_point!(depth, self.uid);
         self.z.depth()
     }
     #[inline]
     fn focus_byte(&self) -> Option<u8> {
+        crate::trace::trace_point!(focus_byte, self.uid);
         self.z.focus_byte()
     }
     fn reset(&mut self) {
+        crate::trace::trace_point!(reset, self.uid);
         self.factor_paths.clear();
         self.z.reset()
     }
     fn val_count(&self) -> usize {
+        crate::trace::trace_point!(val_count, self.uid);
         debug_assert!(self.focus_factor() == self.factor_count() - 1);
         self.z.val_count()
     }
     fn descend_to_existing<K: AsRef<[u8]>>(&mut self, k: K) -> usize {
+        crate::trace::trace_point!(descend_to_existing, self.uid, AsRef::<[u8]>::as_ref(&k).as_ptr(), AsRef::<[u8]>::as_ref(&k).len());
         let k = k.as_ref();
         let mut descended = 0;
 
@@ -200,6 +207,7 @@ impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> Zipper
         descended
     }
     fn descend_to<K: AsRef<[u8]>>(&mut self, k: K) {
+        crate::trace::trace_point!(descend_to, self.uid, AsRef::<[u8]>::as_ref(&k).as_ptr(), AsRef::<[u8]>::as_ref(&k).len());
         let k = k.as_ref();
         let descended = self.descend_to_existing(k);
         if descended != k.len() {
@@ -207,6 +215,7 @@ impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> Zipper
         }
     }
     fn descend_to_check<K: AsRef<[u8]>>(&mut self, k: K) -> bool {
+        crate::trace::trace_point!(descend_to_check, self.uid, AsRef::<[u8]>::as_ref(&k).as_ptr(), AsRef::<[u8]>::as_ref(&k).len());
         let k = k.as_ref();
         let descended = self.descend_to_existing(k);
         if descended != k.len() {
@@ -217,6 +226,7 @@ impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> Zipper
     }
     #[inline]
     fn descend_to_byte(&mut self, k: u8) {
+        crate::trace::trace_point!(descend_to_byte, self.uid, k);
         self.z.descend_to_byte(k);
         if self.z.child_count() == 0 {
             if self.has_next_factor() {
@@ -232,6 +242,7 @@ impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> Zipper
     }
     #[inline]
     fn descend_to_existing_byte(&mut self, k: u8) -> bool {
+        crate::trace::trace_point!(descend_to_existing_byte, self.uid, k);
         let descended = self.z.descend_to_existing_byte(k);
         if descended && self.z.child_count() == 0 {
             if self.has_next_factor() {
@@ -245,16 +256,19 @@ impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> Zipper
         descended
     }
     fn descend_indexed_byte(&mut self, child_idx: usize) -> Option<u8> {
+        crate::trace::trace_point!(descend_indexed_byte, self.uid, child_idx);
         let result = self.z.descend_indexed_byte(child_idx);
         self.ensure_descend_next_factor();
         result
     }
     fn descend_first_byte(&mut self) -> Option<u8> {
+        crate::trace::trace_point!(descend_first_byte, self.uid);
         let result = self.z.descend_first_byte();
         self.ensure_descend_next_factor();
         result
     }
     fn descend_until_observed<Obs: PathObserver>(&mut self, obs: &mut Obs) -> bool {
+        crate::trace::trace_point!(descend_until_observed, self.uid);
         let mut moved = false;
         while self.z.child_count() == 1 {
             moved |= self.z.descend_until_observed(&mut *obs);
@@ -266,6 +280,7 @@ impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> Zipper
         moved
     }
     fn to_next_sibling_byte(&mut self) -> Option<u8> {
+        crate::trace::trace_point!(to_next_sibling_byte, self.uid);
         if self.depth() == 0 { return None }
         //Stepping sideways leaves a factor entered at this depth.
         if self.factor_paths.last().cloned() == Some(self.depth()) {
@@ -278,6 +293,7 @@ impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> Zipper
         moved
     }
     fn to_prev_sibling_byte(&mut self) -> Option<u8> {
+        crate::trace::trace_point!(to_prev_sibling_byte, self.uid);
         if self.depth() == 0 { return None }
         //Stepping sideways leaves a factor entered at this depth.
         if self.factor_paths.last().cloned() == Some(self.depth()) {
@@ -290,21 +306,25 @@ impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> Zipper
         moved
     }
     fn ascend(&mut self, steps: usize) -> usize {
+        crate::trace::trace_point!(ascend, self.uid, steps);
         let ascended = self.z.ascend(steps);
         self.fix_after_ascend();
         ascended
     }
     fn ascend_byte(&mut self) -> bool {
+        crate::trace::trace_point!(ascend_byte, self.uid);
         let ascended = self.z.ascend_byte();
         self.fix_after_ascend();
         ascended
     }
     fn ascend_until(&mut self) -> usize {
+        crate::trace::trace_point!(ascend_until, self.uid);
         let ascended = self.z.ascend_until();
         self.fix_after_ascend();
         ascended
     }
     fn ascend_until_branch(&mut self) -> usize {
+        crate::trace::trace_point!(ascend_until_branch, self.uid);
         let ascended = self.z.ascend_until_branch();
         self.fix_after_ascend();
         ascended
@@ -314,6 +334,7 @@ impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> Zipper
 impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperPath for ProductZipper<'_, 'trie, V, A> {
     #[inline]
     fn path(&self) -> &[u8] {
+        crate::trace::trace_point!(path, self.uid);
         self.z.path()
     }
 }
@@ -322,12 +343,14 @@ impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> Zipper
 
 impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperValues<V> for ProductZipper<'_, 'trie, V, A> {
     fn val(&self) -> Option<&V> {
+        crate::trace::trace_point!(val, self.uid);
         unsafe{ self.z.get_val() }
     }
 }
 
 impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperValuesAt<V> for ProductZipper<'_, 'trie, V, A> {
     fn val_at<K: AsRef<[u8]>>(&self, path: K) -> Option<&V> {
+        crate::trace::trace_point!(val_at, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         unsafe{ self.z.get_val_at(path) }
     }
 }
@@ -348,23 +371,29 @@ impl<'factor_z, 'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 't
         ProductZipperWitness((primary_witness, secondary_witnesses))
     }
     fn get_val_with_witness<'w>(&self, _witness: &'w Self::WitnessT) -> Option<&'w V> where 'trie: 'w {
+        crate::trace::trace_point!(get_val_with_witness, self.uid);
         //SAFETY: We know the witnesses are keeping the nodes we're borrowing from alive
         unsafe{ self.z.get_val() }
     }
 }
 
 impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> Zipper for ProductZipper<'_, 'trie, V, A> {
+    fn trace_uid(&self) -> u64 { self.uid.get() }
     #[inline]
     fn path_exists(&self) -> bool {
+        crate::trace::trace_point!(path_exists, self.uid);
         self.z.path_exists()
     }
     fn is_val(&self) -> bool {
+        crate::trace::trace_point!(is_val, self.uid);
         self.z.is_val()
     }
     fn child_count(&self) -> usize {
+        crate::trace::trace_point!(child_count, self.uid);
         self.z.child_count()
     }
     fn child_mask(&self) -> ByteMask {
+        crate::trace::trace_point!(child_mask, self.uid);
         self.z.child_mask()
     }
 }
@@ -373,6 +402,7 @@ impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperConcrete for ProductZip
     //GOAT, this is a temporary fix to provide correctness at the expense of reporting sharing until
     // https://github.com/Adam-Vandervorst/PathMap/pull/136 gets sorted.
     fn shared_node_id(&self) -> Option<u64> {
+        crate::trace::trace_point!(shared_node_id, self.uid);
         if self.factor_paths.len() == 0 {
             self.z.shared_node_id()
         } else {
@@ -382,6 +412,7 @@ impl<V: Clone + Send + Sync + Unpin, A: Allocator> ZipperConcrete for ProductZip
     //GOAT, this is a temporary fix to provide correctness at the expense of reporting sharing until
     // https://github.com/Adam-Vandervorst/PathMap/pull/136 gets sorted.
     fn is_shared(&self) -> bool {
+        crate::trace::trace_point!(is_shared, self.uid);
         if self.factor_paths.len() == 0 {
             self.z.is_shared()
         } else {
@@ -397,8 +428,8 @@ impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> Zipper
 }
 
 impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperAbsolutePath for ProductZipper<'_, 'trie, V, A> {
-    fn origin_path(&self) -> &[u8] { self.z.origin_path() }
-    fn root_prefix_path(&self) -> &[u8] { self.z.root_prefix_path() }
+    fn origin_path(&self) -> &[u8] { crate::trace::trace_point!(origin_path, self.uid); self.z.origin_path() }
+    fn root_prefix_path(&self) -> &[u8] { crate::trace::trace_point!(root_prefix_path, self.uid); self.z.root_prefix_path() }
 }
 
 /// A [Zipper] type that moves through a Cartesian product trie created by extending each path in a primary
@@ -414,6 +445,8 @@ pub struct ProductZipperG<'trie, PrimaryZ, SecondaryZ, V>
     where
         V: Clone + Send + Sync,
 {
+    /// Identifies the zipper in traces, see [crate::trace]
+    uid: crate::trace::ZipperUid,
     factor_paths: Vec<usize>,
     primary: PrimaryZ,
     secondary: Vec<SecondaryZ>,
@@ -434,6 +467,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V> ProductZipperG<'trie, PrimaryZ, SecondaryZ,
             SecondaryZ: ZipperValues<V>,
     {
         Self {
+            uid: crate::trace::new_uid!(ProductZipperG),
             factor_paths: Vec::new(),
             primary,
             secondary: other_zippers.into_iter().collect(),
@@ -546,8 +580,8 @@ impl<'trie, PrimaryZ, SecondaryZ, V> ZipperAbsolutePath
         PrimaryZ: ZipperAbsolutePath,
         SecondaryZ: ZipperMoving + ZipperPath,
 {
-    fn origin_path(&self) -> &[u8] { self.primary.origin_path() }
-    fn root_prefix_path(&self) -> &[u8] { self.primary.root_prefix_path() }
+    fn origin_path(&self) -> &[u8] { crate::trace::trace_point!(origin_path, self.uid); self.primary.origin_path() }
+    fn root_prefix_path(&self) -> &[u8] { crate::trace::trace_point!(root_prefix_path, self.uid); self.primary.root_prefix_path() }
 }
 
 impl<'trie, PrimaryZ, SecondaryZ, V> ZipperConcrete
@@ -558,6 +592,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V> ZipperConcrete
         SecondaryZ: ZipperMoving + ZipperPath + ZipperConcrete,
 {
     fn shared_node_id(&self) -> Option<u64> {
+        crate::trace::trace_point!(shared_node_id, self.uid);
         if let Some(idx) = self.factor_idx(true) {
             self.secondary[idx].shared_node_id()
         } else {
@@ -565,6 +600,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V> ZipperConcrete
         }
     }
     fn is_shared(&self) -> bool {
+        crate::trace::trace_point!(is_shared, self.uid);
         if let Some(idx) = self.factor_idx(true) {
             self.secondary[idx].is_shared()
         } else {
@@ -593,6 +629,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V> ZipperValues<V>
         SecondaryZ: ZipperMoving + ZipperPath + ZipperValues<V>,
 {
     fn val(&self) -> Option<&V> {
+        crate::trace::trace_point!(val, self.uid);
         if let Some(idx) = self.factor_idx(true) {
             self.secondary[idx].val()
         } else {
@@ -609,6 +646,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V> ZipperValuesAt<V>
         SecondaryZ: ZipperMoving + ZipperPath + ZipperValuesAt<V>,
 {
     fn val_at<K: AsRef<[u8]>>(&self, path: K) -> Option<&V> {
+        crate::trace::trace_point!(val_at, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         if let Some(idx) = self.factor_idx(true) {
             self.secondary[idx].val_at(path)
         } else {
@@ -625,6 +663,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V> ZipperReadOnlyValues<'trie, V>
         SecondaryZ: ZipperMoving + ZipperPath + ZipperReadOnlyValues<'trie, V>,
 {
     fn get_val(&self) -> Option<&'trie V> {
+        crate::trace::trace_point!(get_val, self.uid);
         if let Some(idx) = self.factor_idx(true) {
             self.secondary[idx].get_val()
         } else {
@@ -632,6 +671,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V> ZipperReadOnlyValues<'trie, V>
         }
     }
     fn get_val_at<K: AsRef<[u8]>>(&self, path: K) -> Option<&'trie V> {
+        crate::trace::trace_point!(get_val_at, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         if let Some(idx) = self.factor_idx(true) {
             self.secondary[idx].get_val_at(path)
         } else {
@@ -654,6 +694,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V> ZipperReadOnlyConditionalValues<'trie, V>
         (primary_witness, secondary_witnesses)
     }
     fn get_val_with_witness<'w>(&self, witness: &'w Self::WitnessT) -> Option<&'w V> where 'trie: 'w {
+        crate::trace::trace_point!(get_val_with_witness, self.uid);
         if let Some(idx) = self.factor_idx(true) {
             self.secondary[idx].get_val_with_witness(&witness.1[idx])
         } else {
@@ -668,7 +709,9 @@ impl<'trie, PrimaryZ, SecondaryZ, V> Zipper for ProductZipperG<'trie, PrimaryZ, 
         PrimaryZ: ZipperMoving + Zipper,
         SecondaryZ: ZipperMoving + Zipper,
 {
+    fn trace_uid(&self) -> u64 { self.uid.get() }
     fn path_exists(&self) -> bool {
+        crate::trace::trace_point!(path_exists, self.uid);
         if let Some(idx) = self.factor_idx(true) {
             self.secondary[idx].path_exists()
         } else {
@@ -676,6 +719,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V> Zipper for ProductZipperG<'trie, PrimaryZ, 
         }
     }
     fn is_val(&self) -> bool {
+        crate::trace::trace_point!(is_val, self.uid);
         if let Some(idx) = self.factor_idx(true) {
             self.secondary[idx].is_val()
         } else {
@@ -683,6 +727,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V> Zipper for ProductZipperG<'trie, PrimaryZ, 
         }
     }
     fn child_count(&self) -> usize {
+        crate::trace::trace_point!(child_count, self.uid);
         if let Some(idx) = self.factor_idx(false) {
             self.secondary[idx].child_count()
         } else {
@@ -690,6 +735,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V> Zipper for ProductZipperG<'trie, PrimaryZ, 
         }
     }
     fn child_mask(&self) -> ByteMask {
+        crate::trace::trace_point!(child_mask, self.uid);
         if let Some(idx) = self.factor_idx(false) {
             self.secondary[idx].child_mask()
         } else {
@@ -706,13 +752,16 @@ impl<'trie, PrimaryZ, SecondaryZ, V> ZipperMoving for ProductZipperG<'trie, Prim
 {
     #[inline]
     fn depth(&self) -> usize {
+        crate::trace::trace_point!(depth, self.uid);
         self.primary.depth()
     }
     #[inline]
     fn focus_byte(&self) -> Option<u8> {
+        crate::trace::trace_point!(focus_byte, self.uid);
         self.primary.focus_byte()
     }
     fn reset(&mut self) {
+        crate::trace::trace_point!(reset, self.uid);
         self.factor_paths.clear();
         for secondary in &mut self.secondary {
             secondary.reset();
@@ -721,9 +770,11 @@ impl<'trie, PrimaryZ, SecondaryZ, V> ZipperMoving for ProductZipperG<'trie, Prim
     }
     #[inline]
     fn val_count(&self) -> usize {
+        crate::trace::trace_point!(val_count, self.uid);
         unimplemented!("method will probably get removed")
     }
     fn descend_to_existing<K: AsRef<[u8]>>(&mut self, path: K) -> usize {
+        crate::trace::trace_point!(descend_to_existing, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         let mut path = path.as_ref();
         let mut descended = 0;
         'descend: while !path.is_empty() {
@@ -745,6 +796,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V> ZipperMoving for ProductZipperG<'trie, Prim
         descended
     }
     fn descend_to<K: AsRef<[u8]>>(&mut self, path: K) {
+        crate::trace::trace_point!(descend_to, self.uid, AsRef::<[u8]>::as_ref(&path).as_ptr(), AsRef::<[u8]>::as_ref(&path).len());
         let path = path.as_ref();
         let good = self.descend_to_existing(path);
         if good == path.len() {
@@ -759,9 +811,11 @@ impl<'trie, PrimaryZ, SecondaryZ, V> ZipperMoving for ProductZipperG<'trie, Prim
     }
     #[inline]
     fn descend_to_byte(&mut self, k: u8) {
+        crate::trace::trace_point!(descend_to_byte, self.uid, k);
         self.descend_to([k])
     }
     fn descend_indexed_byte(&mut self, child_idx: usize) -> Option<u8> {
+        crate::trace::trace_point!(descend_indexed_byte, self.uid, child_idx);
         let mask = self.child_mask();
         let byte = mask.indexed_bit::<true>(child_idx)?;
         self.descend_to_byte(byte);
@@ -769,9 +823,11 @@ impl<'trie, PrimaryZ, SecondaryZ, V> ZipperMoving for ProductZipperG<'trie, Prim
     }
     #[inline]
     fn descend_first_byte(&mut self) -> Option<u8> {
+        crate::trace::trace_point!(descend_first_byte, self.uid);
         self.descend_indexed_byte(0)
     }
     fn descend_until_observed<Obs: PathObserver>(&mut self, obs: &mut Obs) -> bool {
+        crate::trace::trace_point!(descend_until_observed, self.uid);
         let mut moved = false;
         self.enter_factors();
         while self.child_count() == 1 {
@@ -793,13 +849,16 @@ impl<'trie, PrimaryZ, SecondaryZ, V> ZipperMoving for ProductZipperG<'trie, Prim
     }
     #[inline]
     fn to_next_sibling_byte(&mut self) -> Option<u8> {
+        crate::trace::trace_point!(to_next_sibling_byte, self.uid);
         self.to_sibling_byte(true)
     }
     #[inline]
     fn to_prev_sibling_byte(&mut self) -> Option<u8> {
+        crate::trace::trace_point!(to_prev_sibling_byte, self.uid);
         self.to_sibling_byte(false)
     }
     fn ascend(&mut self, steps: usize) -> usize {
+        crate::trace::trace_point!(ascend, self.uid, steps);
         let mut remaining = steps;
         while remaining > 0 {
             self.exit_factors();
@@ -817,14 +876,17 @@ impl<'trie, PrimaryZ, SecondaryZ, V> ZipperMoving for ProductZipperG<'trie, Prim
     }
     #[inline]
     fn ascend_byte(&mut self) -> bool {
+        crate::trace::trace_point!(ascend_byte, self.uid);
         self.ascend(1) == 1
     }
     #[inline]
     fn ascend_until(&mut self) -> usize {
+        crate::trace::trace_point!(ascend_until, self.uid);
         self.ascend_cond(true)
     }
     #[inline]
     fn ascend_until_branch(&mut self) -> usize {
+        crate::trace::trace_point!(ascend_until_branch, self.uid);
         self.ascend_cond(false)
     }
 }
@@ -837,6 +899,7 @@ impl<'trie, PrimaryZ, SecondaryZ, V> ZipperPath for ProductZipperG<'trie, Primar
 {
     #[inline]
     fn path(&self) -> &[u8] {
+        crate::trace::trace_point!(path, self.uid);
         self.primary.path()
     }
 }
