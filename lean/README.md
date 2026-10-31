@@ -708,6 +708,29 @@ operation for making one.  See
 are spec drift rather than findings: v3 changes the k-path walk and the integer
 `psubtract`, and this oracle is pinned to master's reading of both.
 
+### Zippy's set algebra, as zipper laws
+
+`PrunedModel/Zippy.lean` translates
+[Zippy's `formal.egg`](https://github.com/Adam-Vandervorst/Zippy/blob/b/formal.egg)
+— the reference semantics of a path-set algebra, given as egglog rewrite rules —
+into theorems about this model's zippers, and proves every one of them.  Over
+`()` a `PrunedMap` *is* a finite set of paths, so each egg operator is defined as
+a zipper program (`Union` is `join_map_into`, `Unwrap` is `descend_to` then
+`make_map`, `Head` reads `child_mask`, …) and each rule becomes an equation
+between programs.  The tour's `(check …)` lines are `#guard`s.
+
+Two files underneath carry it.  `Pointwise.lean` says what every `Map.lean`
+operation holds at each path.  `Refine.lean` proves, for thirteen write
+operations, that each one replaces the focus's subtrie with a named map and
+changes nothing else — `meet_into` writes `meet z.make_map src.make_map`, and
+so on.
+
+Five operations are *not* the egg operator their name suggests, and the file
+says how: `join_into` ignores the source's focus value, `restrict` keeps the
+destination's and ignores the source's, `insert_prefix` leaves the focus value
+behind, `join_k_path_into 1` loses depth-1 values, and `meet_k_path_into 1`
+keeps the focus value when the meet is empty.
+
 ## Out of scope
 
 `ZipperHead` and the concurrency story, `ProductZipper` / `PrefixZipper` /
