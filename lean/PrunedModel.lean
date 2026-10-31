@@ -8,4 +8,5 @@ import PrunedModel.Nested
 import PrunedModel.Pointwise
 import PrunedModel.Refine
 import PrunedModel.Zippy
+import PrunedModel.Project
 import PrunedModel.Fuzz

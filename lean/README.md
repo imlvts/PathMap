@@ -731,6 +731,23 @@ destination's and ignores the source's, `insert_prefix` leaves the focus value
 behind, `join_k_path_into 1` loses depth-1 values, and `meet_k_path_into 1`
 keeps the focus value when the meet is empty.
 
+### The two models agree on values
+
+`PrunedModel/Project.lean` proves that the models are the same specification
+once dangling paths are forgotten.  The projection `π t := PrunedMap.mk' t.vals`
+loses no value lookup, for every `PathMapModel` trie.  Every map operation
+commutes with it, and so do these zipper write operations, for any `prune` flag:
+`set_val`, `remove_val`, `create_path`, `prune_path`, `graft`, `graft_map`,
+`graft_src_at`, `remove_branches`, `take_map`, `insert_prefix`, `remove_prefix`,
+`join_into`, `join_map_into`, `meet_into`, `subtract_into`, `meet_2` and
+`restrict`.  `prune_path` needs the trie's locations to be prefix-closed, which
+every trie the model builds is.
+
+Four operations read dangling paths and cannot commute, and each has a
+counterexample theorem: `child_mask`, `restricting` (a dangling-only source
+erases the destination), `meet_k_path_into` (a dangling k-path is an empty
+operand — `PRUNED_FINDINGS.md` #6) and the map `take_map` returns.
+
 ## Out of scope
 
 `ZipperHead` and the concurrency story, `ProductZipper` / `PrefixZipper` /
