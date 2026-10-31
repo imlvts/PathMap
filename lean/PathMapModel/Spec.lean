@@ -299,6 +299,35 @@ def toNextValMonotone (z : Zip V) : Bool :=
   let (moved, z') := z.toNextVal
   if moved then Path.lt z.path z'.path && z'.isVal else z'.atRoot
 
+/-- Reverse stepping lands on an existing non-root predecessor, except for
+the initial wrap from the root. Exhaustion returns to the root. -/
+def toPrevStepMonotone (z : Zip V) : Bool :=
+  let (moved, z') := z.toPrevStep
+  if moved then z'.pathExists && !z'.atRoot && (z.atRoot || Path.lt z'.path z.path)
+  else z'.atRoot
+
+/-- Reverse value iteration has the same ordering and boundary as stepping. -/
+def toPrevValMonotone (z : Zip V) : Bool :=
+  let (moved, z') := z.toPrevVal
+  if moved then z'.isVal && !z'.atRoot && (z.atRoot || Path.lt z'.path z.path)
+  else z'.atRoot
+
+/-- Forward then backward returns to an existing non-root starting position. -/
+def stepRoundTrip (z : Zip V) : Bool :=
+  if !z.pathExists || z.atRoot then true
+  else
+    let (moved, next) := z.toNextStep
+    let (back, prev) := next.toPrevStep
+    !moved || (back && prev.path == z.path)
+
+/-- Forward then backward returns to a non-root starting value. -/
+def valRoundTrip (z : Zip V) : Bool :=
+  if !z.isVal || z.atRoot then true
+  else
+    let (moved, next) := z.toNextVal
+    let (back, prev) := next.toPrevVal
+    !moved || (back && prev.path == z.path)
+
 /-- Last-value descent stays within the starting subtree, includes the focus,
 and leaves it unchanged when no value is found. Repeating success is stable. -/
 def descendLastValLands (z : Zip V) : Bool :=
@@ -377,8 +406,7 @@ def graftThenMakeMap (ops : ValOps V) (dst src : Zip V) : Bool :=
 `ZipperWriting::insert_prefix`.
 
 Only the *branches* are compared: `insert_prefix` does not move the focus value,
-and `drop_head` discards values at depth exactly `k`, so the focus value plays no
-part on either side. -/
+so dropping that prefix cannot restore the original focus value. -/
 def dropHeadUndoesInsertPrefix (ops : ValOps V) (z : Zip V) (pre : Path) : Bool :=
   if z.focusNodeIsEmpty || pre.isEmpty then true
   else
@@ -392,13 +420,13 @@ def joinEmptyIdentity (ops : ValOps V) (z : Zip V) : Bool :=
   let src : Zip V := { trie := PathMap.empty, root := [], path := [] }
   let (st, z') := z.joinInto ops src
   PathMap.beqT ops z'.trie z.trie &&
-    (st == (if z.focusNodeIsEmpty then AlgStatus.none else AlgStatus.identity))
+    (st == (if z.focusNodeIsEmpty && z.val.isNone then AlgStatus.none else AlgStatus.identity))
 
 /-- Joining a zipper into itself is the identity, and reports it. -/
 def joinSelfIdentity (ops : ValOps V) (z : Zip V) : Bool :=
   let (st, z') := z.joinInto ops z
   PathMap.beqT ops z'.trie z.trie &&
-    (st == (if z.focusNodeIsEmpty then AlgStatus.none else AlgStatus.identity))
+    (st == (if z.focusNodeIsEmpty && z.val.isNone then AlgStatus.none else AlgStatus.identity))
 
 /-- `remove_branches` empties the focus but preserves its value. -/
 def removeBranchesKeepsVal (ops : ValOps V) (z : Zip V) : Bool :=
