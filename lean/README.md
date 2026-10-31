@@ -731,6 +731,17 @@ destination's and ignores the source's, `insert_prefix` leaves the focus value
 behind, `join_k_path_into 1` loses depth-1 values, and `meet_k_path_into 1`
 keeps the focus value when the meet is empty.
 
+`ZippyLaws.lean` exports those laws for the algebraic equivalence fuzzer
+(`differential/src/algebraic`, on the `alg-fuzzer` branch).  It loads the
+elaborated module, keeps every `sorry`-free theorem that is an equation between
+spaces over the operators the fuzzer evaluates, and prints them as Rust —
+70 laws, with the theorems it skips listed at the end of the output and why:
+
+```sh
+lake build PrunedModel
+lake env lean --run ZippyLaws.lean > ../differential/src/algebraic/zippy_laws.rs
+```
+
 ### The two models agree on values
 
 `PrunedModel/Project.lean` proves that the models are the same specification
