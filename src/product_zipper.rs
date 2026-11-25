@@ -114,9 +114,13 @@ impl<'factor_z, 'trie, V: Clone + Send + Sync + Unpin, A: Allocator> ProductZipp
         self.factor_paths.len() < self.secondaries.len()
     }
     fn enroll_next_factor(&mut self) {
+        Self::enroll_next_factor_in(&mut self.z, &mut self.factor_paths, &self.secondaries)
+    }
+    /// [Self::enroll_next_factor] on separately borrowed parts, so it can run on a copy of the core
+    fn enroll_next_factor_in(z: &mut read_zipper_core::ReadZipperCore<'trie, 'static, V, A>, factor_paths: &mut Vec<usize>, secondaries: &[TrieRef<'trie, V, A>]) {
         //If there is a `_secondary_root_val`, it lands at the same path as the value where the
         // paths are joined.  And the value from the earlier zipper takes precedence
-        let (secondary_root, partial_path, _secondary_root_val) = self.secondaries[self.factor_paths.len()].borrow_raw_parts();
+        let (secondary_root, partial_path, _secondary_root_val) = secondaries[factor_paths.len()].borrow_raw_parts();
 
         //SAFETY: We won't drop the `secondaries` vec until we're done with the stack of node references
         let secondary_root: TaggedNodeRef<'trie, V, A> = unsafe{ core::mem::transmute(secondary_root) };
@@ -126,9 +130,30 @@ impl<'factor_z, 'trie, V: Clone + Send + Sync + Unpin, A: Allocator> ProductZipp
         //See "WARNING" in ProductZipper creation methods
         assert_eq!(partial_path.len(), 0);
 
-        self.z.deregularize();
-        self.z.push_node(secondary_root);
-        self.factor_paths.push(self.depth());
+        z.deregularize();
+        z.push_node(secondary_root);
+        factor_paths.push(z.depth());
+    }
+    /// [ZipperMoving::descend_to_existing] on separately borrowed parts, so it can run on a copy of the core
+    fn descend_to_existing_in(z: &mut read_zipper_core::ReadZipperCore<'trie, 'static, V, A>, factor_paths: &mut Vec<usize>, secondaries: &[TrieRef<'trie, V, A>], k: &[u8]) -> usize {
+        let mut descended = 0;
+
+        while descended < k.len() {
+            let this_step = z.descend_to_existing(&k[descended..]);
+            if this_step == 0 {
+                break
+            }
+            descended += this_step;
+
+            if factor_paths.len() < secondaries.len() {
+                if z.child_count() == 0 && factor_paths.last().map(|l| *l).unwrap_or(0) < z.depth() {
+                    Self::enroll_next_factor_in(z, factor_paths, secondaries);
+                }
+            } else {
+                break
+            }
+        }
+        descended
     }
     /// Internal method to descend across the boundary between two factor zippers if the focus is on a value
     ///
@@ -179,25 +204,7 @@ impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> Zipper
         self.z.val_count()
     }
     fn descend_to_existing<K: AsRef<[u8]>>(&mut self, k: K) -> usize {
-        let k = k.as_ref();
-        let mut descended = 0;
-
-        while descended < k.len() {
-            let this_step = self.z.descend_to_existing(&k[descended..]);
-            if this_step == 0 {
-                break
-            }
-            descended += this_step;
-
-            if self.has_next_factor() {
-                if self.z.child_count() == 0 && self.factor_paths.last().map(|l| *l).unwrap_or(0) < self.depth() {
-                    self.enroll_next_factor();
-                }
-            } else {
-                break
-            }
-        }
-        descended
+        Self::descend_to_existing_in(&mut self.z, &mut self.factor_paths, &self.secondaries, k.as_ref())
     }
     fn descend_to<K: AsRef<[u8]>>(&mut self, k: K) {
         let k = k.as_ref();
@@ -327,8 +334,24 @@ impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> Zipper
 }
 
 impl<'trie, V: Clone + Send + Sync + Unpin + 'trie, A: Allocator + 'trie> ZipperValuesAt<V> for ProductZipper<'_, 'trie, V, A> {
+    /// The same as `descend_to(path)` then [`val`](ZipperValues::val), also across factor joints.
+    ///
+    /// Runs the descent on a copy of the zipper's core, so it costs a copy of the path and node stack.
+    //The core's own `get_val_at` can't be used: it reaches the focus through the node below it on the
+    // stack, and a secondary factor's root is pushed onto the stack without being that node's child
     fn val_at<K: AsRef<[u8]>>(&self, path: K) -> Option<&V> {
-        unsafe{ self.z.get_val_at(path) }
+        let path = path.as_ref();
+        if path.is_empty() {
+            return self.val()
+        }
+        let mut z = self.z.clone();
+        let mut factor_paths = self.factor_paths.clone();
+        if Self::descend_to_existing_in(&mut z, &mut factor_paths, &self.secondaries, path) != path.len() {
+            return None
+        }
+        //SAFETY: `path` is not empty, so the value is in a trie node rather than in the copy's root
+        // value, and the copy's nodes are shared with `self.z` and `self.secondaries`, which outlive `&self`
+        unsafe{ z.get_val() }
     }
 }
 
@@ -1938,6 +1961,61 @@ mod tests {
             }
             // --- END OF MACRO GENERATED MOD ---
         };
+    }
+
+    /// `ProductZipper::val_at(p)` is `descend_to(p); val()`, at and across factor joints.  It used to
+    /// panic with the focus on a joint or inside the first node of a secondary factor
+    #[test]
+    fn product_zipper_val_at_matches_descend() {
+        fn all_paths(max_len: usize) -> Vec<Vec<u8>> {
+            let mut out = vec![vec![]];
+            let mut i = 0;
+            while i < out.len() {
+                if out[i].len() < max_len {
+                    for b in [b'a', b'b', b'c', b'd', b'x'] {
+                        let mut p = out[i].clone();
+                        p.push(b);
+                        out.push(p);
+                    }
+                }
+                i += 1;
+            }
+            out
+        }
+        let primary = PathMap::from_iter([(b"a".as_slice(), 1u64), (b"bx".as_slice(), 2), (b"b".as_slice(), 3)]);
+        let secondary = PathMap::from_iter([(b"bcd".as_slice(), 4u64), (b"bce".as_slice(), 5), (b"x".as_slice(), 6)]);
+        let mut dangling = PathMap::<u64>::new();
+        dangling.create_path(b"c");
+        dangling.set_val_at(b"d", 7);
+        let third = PathMap::from_iter([(b"a".as_slice(), 8u64), (b"cd".as_slice(), 9)]);
+        let factor_sets: [&[&PathMap<u64>]; 3] = [&[&secondary], &[&secondary, &third], &[&dangling, &secondary]];
+        //Miri is too slow for the full sweep
+        let (focus_len, suffix_len) = if cfg!(miri) { (2, 2) } else { (3, 4) };
+        let focuses = all_paths(focus_len);
+        let suffixes = all_paths(suffix_len);
+        for factors in factor_sets {
+            let new_pz = || ProductZipper::new(primary.read_zipper(), factors.iter().map(|m| m.read_zipper()));
+            for focus in focuses.iter() {
+                let mut pz = new_pz();
+                pz.descend_to(focus);
+                for suffix in suffixes.iter() {
+                    let mut expected = new_pz();
+                    expected.descend_to(focus);
+                    expected.descend_to(suffix);
+                    assert_eq!(pz.val_at(suffix), expected.val(), "focus {focus:?} path {suffix:?}");
+                }
+            }
+        }
+        //The original report: primary {a}, secondary {bcd, bce}, `val_at([])` at `a` and at `ab`
+        let primary = PathMap::from_iter([(b"a".as_slice(), 1u64)]);
+        let secondary = PathMap::from_iter([(b"bcd".as_slice(), 2u64), (b"bce".as_slice(), 3)]);
+        let mut pz = ProductZipper::new(primary.read_zipper(), [secondary.read_zipper()]);
+        pz.descend_to(b"a");
+        assert_eq!(pz.val_at(b""), Some(&1));
+        assert_eq!(pz.val_at(b"bcd"), Some(&2));
+        pz.descend_to(b"b");
+        assert_eq!(pz.val_at(b""), None);
+        assert_eq!(pz.val_at(b"ce"), Some(&3));
     }
 
     macro_rules! noop { ($x:ident) => {}; (*$x:ident) => {}; }
